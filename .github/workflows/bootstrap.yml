@@ -20,7 +20,7 @@ jobs:
             echo "Bootstrap chunks not complete; nothing to do."
             exit 0
           fi
-          cat .bootstrap/chunk*.b64 | base64 -d > /tmp/sph-trmnl.yaml.gz
+          cat .bootstrap/chunk*.b64 | tr -d '\r\n\t ' | base64 -d > /tmp/sph-trmnl.yaml.gz
           gzip -dc /tmp/sph-trmnl.yaml.gz > sph-trmnl-7.5-diy.yaml
           test "$(wc -c < sph-trmnl-7.5-diy.yaml)" -eq 142523
           rm -rf .bootstrap
