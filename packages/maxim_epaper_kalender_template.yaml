@@ -1,0 +1,78 @@
+# Home Assistant Template-Sensor für das Maxim-ePaper
+#
+# Quelle:
+#   sensor.schulkalender_maxim_mk
+# Attribut:
+#   termine
+#
+# Ergebnis:
+#   sensor.maxim_epaper_kalender
+# Attribut:
+#   termine_json
+#
+# Es werden ausschließlich heutige/zukünftige Einträge der Arten
+# "Arbeiten" und "Klausuren" übernommen, chronologisch sortiert
+# und auf maximal 5 Einträge begrenzt.
+
+template:
+  - sensor:
+      - name: "Maxim ePaper Kalender"
+        unique_id: maxim_epaper_kalender
+        icon: mdi:calendar-edit
+        state: >
+          {% set quelle = state_attr('sensor.schulkalender_maxim_mk', 'termine') or [] %}
+          {% set heute = now().strftime('%Y-%m-%d') %}
+          {% set ns = namespace(termine=[]) %}
+
+          {% for t in quelle %}
+            {% set art = t.get('art', '') %}
+            {% set start = t.get('start', '') %}
+            {% if art in ['Arbeiten', 'Klausuren']
+                  and start|length >= 10
+                  and start[0:10] >= heute %}
+              {% set ns.termine = ns.termine + [{
+                'start': start,
+                'datum': start[8:10] ~ '.' ~ start[5:7] ~ '.',
+                'summary': t.get('summary', ''),
+                'art': art
+              }] %}
+            {% endif %}
+          {% endfor %}
+
+          {{ (ns.termine | sort(attribute='start') | list)[:5] | count }}
+        attributes:
+          termine_json: >
+            {% set quelle = state_attr('sensor.schulkalender_maxim_mk', 'termine') or [] %}
+            {% set heute = now().strftime('%Y-%m-%d') %}
+            {% set ns = namespace(termine=[]) %}
+
+            {% for t in quelle %}
+              {% set art = t.get('art', '') %}
+              {% set start = t.get('start', '') %}
+              {% if art in ['Arbeiten', 'Klausuren']
+                    and start|length >= 10
+                    and start[0:10] >= heute %}
+                {% set ns.termine = ns.termine + [{
+                  'start': start,
+                  'datum': start[8:10] ~ '.' ~ start[5:7] ~ '.',
+                  'summary': t.get('summary', ''),
+                  'art': art
+                }] %}
+              {% endif %}
+            {% endfor %}
+
+            {{ (ns.termine | sort(attribute='start') | list)[:5] | to_json }}
+          anzahl_termine: >
+            {% set quelle = state_attr('sensor.schulkalender_maxim_mk', 'termine') or [] %}
+            {% set heute = now().strftime('%Y-%m-%d') %}
+            {% set ns = namespace(anzahl=0) %}
+            {% for t in quelle %}
+              {% set art = t.get('art', '') %}
+              {% set start = t.get('start', '') %}
+              {% if art in ['Arbeiten', 'Klausuren']
+                    and start|length >= 10
+                    and start[0:10] >= heute %}
+                {% set ns.anzahl = ns.anzahl + 1 %}
+              {% endif %}
+            {% endfor %}
+            {{ [ns.anzahl, 5] | min }}
