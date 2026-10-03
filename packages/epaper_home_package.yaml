@@ -1,0 +1,146 @@
+# Einmalig unter /config/packages/epaper_home_package.yaml installieren.
+# Alle Räume und Entitäten werden dynamisch ermittelt; keine Geräte-IDs pflegen.
+# Raumzuordnung wird mit area_id(entity) inklusive Geräte-Vererbung aufgelöst.
+# Optionales HA-Label epaper_ausblenden blendet einzelne Entitäten aus.
+template:
+- triggers:
+  - trigger: homeassistant
+    event: start
+  - trigger: time_pattern
+    seconds: /5
+  sensor:
+  - name: ePaper Home Rooms
+    unique_id: epaper_home_rooms
+    default_entity_id: sensor.epaper_home_rooms
+    icon: mdi:home
+    state: ready
+    attributes:
+      payload: |-
+        {% set out = namespace(rooms=[]) %}
+        {% set excluded = label_entities('epaper_ausblenden') %}
+        {% set candidates = (states.light | list) + (states.cover | list) + (states.climate | list) %}
+        {% for area in areas() | sort %}
+          {% set room = namespace(entities=[]) %}
+          {% for s in candidates | sort(attribute='name') %}
+            {% set a = s.attributes %}
+            {% set heating = s.domain == 'climate' and 'heat' in a.get('hvac_modes', []) and a.get('max_temp', 999) | float(999) <= 60 %}
+            {% set covering = s.domain == 'cover' and a.get('device_class') in ['shutter', 'blind', 'awning'] %}
+            {% if area_id(s.entity_id) == area and s.entity_id not in excluded and (s.domain == 'light' or heating or covering) %}
+              {% set modes = a.get('supported_color_modes', []) %}
+              {% set dim = s.domain == 'light' and (modes | reject('in', ['onoff', 'unknown']) | list | count > 0) %}
+              {% set brightness = (a.get('brightness') | float * 100 / 255) | round(0) if a.get('brightness') is number else none %}
+              {% set room.entities = room.entities + [dict(id=s.entity_id, n=s.name, d=s.domain, s=s.state,
+                kind=a.get('device_class', ''), f=a.get('supported_features', 0), dim=dim, b=brightness,
+                p=a.get('current_position'), t=a.get('temperature'), cur=a.get('current_temperature'),
+                min=a.get('min_temp'), max=a.get('max_temp'), step=a.get('target_temp_step', 0.5),
+                unit=a.get('temperature_unit', '°C'), m=a.get('hvac_modes', []))] %}
+            {% endif %}
+          {% endfor %}
+          {% if room.entities | count > 0 %}
+            {% set out.rooms = out.rooms + [dict(id=area, n=area_name(area), entities=room.entities)] %}
+          {% endif %}
+        {% endfor %}
+        {{ dict(rooms=out.rooms | sort(attribute='n')) | to_json }}
+script:
+  epaper_home_control:
+    alias: ePaper Home – Gerätesteuerung
+    mode: queued
+    max: 10
+    fields:
+      entity:
+        required: true
+        description: Zielentität aus der dynamischen Raumliste
+      operation:
+        required: true
+        description: on/off/brightness/open/stop/close/temperature/mode
+      value:
+        required: false
+        description: Zahlenwert oder Heizmodus
+    sequence:
+    - variables:
+        domain: '{{ entity.split(''.'')[0] }}'
+        features: '{{ state_attr(entity, ''supported_features'') | int(0) }}'
+        dim: '{{ (state_attr(entity, ''supported_color_modes'') or []) | reject(''in'', [''onoff'', ''unknown''])
+          | list | count > 0 }}'
+    - if:
+      - condition: template
+        value_template: '{{ area_id(entity) is none or entity in label_entities(''epaper_ausblenden'') or states(entity)
+          in [''unknown'', ''unavailable''] or not (domain == ''light'' or (domain == ''cover'' and state_attr(entity,
+          ''device_class'') in [''shutter'', ''blind'', ''awning'']) or (domain == ''climate'' and ''heat'' in (state_attr(entity,
+          ''hvac_modes'') or []) and state_attr(entity, ''max_temp'') | float(999) <= 60)) }}'
+      then:
+      - stop: Entität nicht verfügbar oder nicht für diese Steuerung zugelassen.
+        error: true
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ domain == ''light'' and operation == ''on'' }}'
+        sequence:
+        - action: light.turn_on
+          target:
+            entity_id: '{{ entity }}'
+      - conditions:
+        - condition: template
+          value_template: '{{ domain == ''light'' and operation == ''off'' }}'
+        sequence:
+        - action: light.turn_off
+          target:
+            entity_id: '{{ entity }}'
+      - conditions:
+        - condition: template
+          value_template: '{{ domain == ''light'' and operation == ''brightness'' and dim and value | is_number
+            }}'
+        sequence:
+        - action: light.turn_on
+          target:
+            entity_id: '{{ entity }}'
+          data:
+            brightness_pct: '{{ [0, [100, value | float(0)] | min] | max | round(0) }}'
+      - conditions:
+        - condition: template
+          value_template: '{{ domain == ''cover'' and operation == ''open'' and (features | bitwise_and(1)) != 0
+            }}'
+        sequence:
+        - action: cover.open_cover
+          target:
+            entity_id: '{{ entity }}'
+      - conditions:
+        - condition: template
+          value_template: '{{ domain == ''cover'' and operation == ''stop'' and (features | bitwise_and(8)) != 0
+            }}'
+        sequence:
+        - action: cover.stop_cover
+          target:
+            entity_id: '{{ entity }}'
+      - conditions:
+        - condition: template
+          value_template: '{{ domain == ''cover'' and operation == ''close'' and (features | bitwise_and(2)) !=
+            0 }}'
+        sequence:
+        - action: cover.close_cover
+          target:
+            entity_id: '{{ entity }}'
+      - conditions:
+        - condition: template
+          value_template: '{{ domain == ''climate'' and operation == ''temperature'' and (features | bitwise_and(1))
+            != 0 and value | is_number }}'
+        sequence:
+        - action: climate.set_temperature
+          target:
+            entity_id: '{{ entity }}'
+          data:
+            temperature: '{{ [state_attr(entity, ''min_temp'') | float(5), [state_attr(entity, ''max_temp'') | float(30),
+              value | float(20)] | min] | max }}'
+      - conditions:
+        - condition: template
+          value_template: '{{ domain == ''climate'' and operation == ''mode'' and value in (state_attr(entity, ''hvac_modes'')
+            or []) and value in [''heat'', ''auto'', ''off''] }}'
+        sequence:
+        - action: climate.set_hvac_mode
+          target:
+            entity_id: '{{ entity }}'
+          data:
+            hvac_mode: '{{ value }}'
+      default:
+      - stop: Aktion wird von dieser Entität nicht unterstützt.
+        error: true
