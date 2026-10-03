@@ -1,0 +1,323 @@
+# Home Assistant package: /config/packages/epaper_start_package.yaml
+# Ergänzt epaper_home_package und epaper_energy_package, ersetzt sie NICHT.
+# Die durch das Diagnose-Template bestätigten WCS- und WashData-Entitäten sind voreingetragen.
+# v4.2.26: Einkaufsartikel per UID erledigen (ESPHome-Touchaktion).
+# v4.2.25: Hausstatus (Fenster, Smart Lock, Licht, Batterien) und die sechs
+# zuletzt gelisteten offenen Eintraege von todo.einkaufsliste.
+# v4.2.22: iCloud3-Geräte dynamisch erkennen; Standorte nur aus device_tracker.
+# Optional HA-Label epaper_ausblenden verwenden, um Geräte auszuschließen.
+# Zeitangaben werden in der HA-Zeitzone berechnet. Keine Positionsdaten übertragen.
+template:
+  - triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: event
+        event_type: event_template_reloaded
+      - trigger: time_pattern
+        minutes: /1
+      - trigger: state
+        entity_id: sensor.e1003_aktive_seite
+        to: '0'
+      - trigger: state
+        entity_id: todo.einkaufsliste
+    actions:
+      - variables:
+          # Bei Bedarf feste Entitäten eintragen; leere Listen = automatisch.
+          presence_entities: []  # z.B. [device_tracker.maxim_phone]; leer = alle iCloud3-Tracker
+          shopping_entity: todo.einkaufsliste
+          window_entities: []  # leer = binary_sensor mit device_class window/opening
+          lock_entities: []    # leer = alle lock.*-Entitaeten (bei mehreren: alle auflisten)
+          battery_entities: [] # leer = battery-Sensoren + battery-Warn-Binaersensoren
+          low_battery_percent: 20
+          waste_calendar_entities:
+            - calendar.waste_collection_schedule_bad_homburg_vdh
+          waste_sensor_entities:
+            - sensor.waste_collection_schedule_bioabfall
+            - sensor.waste_collection_schedule_gelbe_sacke
+            - sensor.waste_collection_schedule_grunabfall
+            - sensor.waste_collection_schedule_papiertonne
+            - sensor.waste_collection_schedule_restmulltonne
+          # Optional für umbenannte/ältere WashData-Entitäten:
+          # - name: Waschmaschine
+          #   state: sensor.meine_maschine_status
+          #   remaining: sensor.meine_maschine_restzeit
+          #   progress: sensor.meine_maschine_fortschritt
+          appliances:
+            - name: Waschmaschine
+              state: sensor.washing_machine_zustand
+              remaining: sensor.washing_machine_verbleibende_zeit
+              progress: sensor.washing_machine_fortschritt
+            - name: Trockner
+              state: sensor.trockner_zustand
+              remaining: sensor.trockner_verbleibende_zeit
+              progress: sensor.trockner_fortschritt
+            - name: Geschirrspüler
+              state: sensor.geschirrspuler_betriebszustand
+              endtime: sensor.geschirrspuler_programm_endzeit
+          excluded: "{{ label_entities('epaper_ausblenden') }}"
+          waste_ids: "{{ integration_entities('waste_collection_schedule') }}"
+          wash_ids: "{{ integration_entities('ha_washdata') }}"
+          cloud_ids: "{{ integration_entities('icloud3') }}"
+          waste_response: {}
+          shopping_response: {}
+      - if:
+          - condition: template
+            value_template: "{{ has_value(shopping_entity) }}"
+        then:
+          - action: todo.get_items
+            continue_on_error: true
+            target:
+              entity_id: "{{ shopping_entity }}"
+            data:
+              status: needs_action
+            response_variable: shopping_response
+      - variables:
+          calendars: >-
+            {{ (waste_calendar_entities if waste_calendar_entities | count else
+                waste_ids | select('match', '^calendar[.]') | list)
+               | reject('in', excluded) | list }}
+      - if:
+          - condition: template
+            value_template: "{{ calendars | count > 0 }}"
+        then:
+          - action: calendar.get_events
+            continue_on_error: true
+            target:
+              entity_id: "{{ calendars }}"
+            data:
+              start_date_time: "{{ today_at().isoformat() }}"
+              end_date_time: "{{ (today_at() + timedelta(days=90)).isoformat() }}"
+            response_variable: waste_response
+    sensor:
+      - name: ePaper Start Dashboard
+        unique_id: epaper_start_dashboard
+        default_entity_id: sensor.epaper_start_dashboard
+        icon: mdi:view-dashboard
+        state: "{{ now().isoformat() }}"
+        attributes:
+          payload: >-
+            {% set people = namespace(items=[]) %}
+            {% set trackers = cloud_ids | select('match', '^device_tracker[.]') | reject('in', excluded) | list %}
+            {% set selected = namespace(ids=[]) %}
+            {% for e in (presence_entities if presence_entities else trackers) | reject('in', excluded) %}
+              {% if e.startswith('device_tracker.') %}
+                {% set selected.ids = selected.ids + [e] %}
+              {% elif e.startswith('person.') %}
+                {# Alte Konfiguration akzeptieren, aber niemals den person-Zustand verwenden. #}
+                {% set linked = state_attr(e, 'device_trackers') or [] %}
+                {% set selected.ids = selected.ids + (linked | select('match', '^device_tracker[.]') | list) %}
+                {% endif %}
+            {% endfor %}
+            {% for e in selected.ids | reject('in', excluded) | unique %}
+              {% set s = expand(e) | first | default(none) %}
+              {% set people.items = people.items + [dict(id=e,
+                name=s.name if s is not none else e,
+                state=states(e),
+                home=true if states(e) == 'home' else (none if states(e) in ['unknown','unavailable'] else false),
+                kind='device')] %}
+            {% endfor %}
+
+            {% set waste = namespace(raw=[], items=[], seen=[]) %}
+            {% for cal in calendars %}
+              {% for ev in (waste_response | default({}, true)).get(cal, {}).get('events', []) %}
+                {% set date = (ev.get('start', '') | string)[:10] %}
+                {% set dt = strptime(date, '%Y-%m-%d', none) %}
+                {% if dt is not none %}
+                  {% set days = (dt.date() - now().date()).days %}
+                  {% if days >= 0 %}
+                    {% for name in ev.get('summary','Abfuhr').split(',') %}
+                      {% set waste.raw = waste.raw + [dict(name=name | trim, days=days, date=date)] %}
+                    {% endfor %}
+                  {% endif %}
+                {% endif %}
+              {% endfor %}
+            {% endfor %}
+            {# Unterstützt ISO-Datumsschlüssel (upcoming) und Typ->Datum (appointment_types).
+               Kalender liefern auch UI-Quellen ohne separate Sensoren. #}
+            {% set sensors = waste_sensor_entities if waste_sensor_entities else waste_ids | select('match','^sensor[.]') | list %}
+            {% for e in sensors | reject('in', excluded) %}
+              {% set s = expand(e) | first | default(none) %}
+              {% if s is not none and s.state not in ['unknown','unavailable'] %}
+                {% set found = namespace(value=false) %}
+                {% for k,v in s.attributes.items() %}
+                  {% set kd = strptime(k | string, '%Y-%m-%d', none) %}
+                  {% set vd = strptime(v, '%Y-%m-%d', none) if v is string else none %}
+                  {% set dt = kd or vd %}
+                  {% if dt is not none %}
+                    {% set days = (dt.date() - now().date()).days %}
+                    {% if days >= 0 %}
+                      {% set found.value = true %}
+                      {% set names = (v | string).split(',') if kd else [k] %}
+                      {% for n in names %}
+                        {% set waste.raw = waste.raw + [dict(name=n | trim, days=days, date=dt.strftime('%Y-%m-%d'))] %}
+                      {% endfor %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+                {% for ev in s.attributes.get('upcoming', []) %}
+                  {% if ev is mapping %}
+                    {% set dt = strptime((ev.get('date','') | string)[:10], '%Y-%m-%d', none) %}
+                    {% if dt is not none and (dt.date() - now().date()).days >= 0 %}
+                      {% set found.value = true %}
+                      {% set waste.raw = waste.raw + [dict(name=ev.get('type',s.name), days=(dt.date()-now().date()).days, date=dt.strftime('%Y-%m-%d'))] %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+                {% if not found.value and s.attributes.get('daysTo') is number %}
+                  {% set d = s.attributes.daysTo | int %}
+                  {% if d >= 0 %}
+                    {% set waste.raw = waste.raw + [dict(name=s.name, days=d, date=(now()+timedelta(days=d)).strftime('%Y-%m-%d'))] %}
+                  {% endif %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            {% for item in waste.raw | sort(attribute='days') %}
+              {% if item.name not in waste.seen %}
+                {% set waste.seen = waste.seen + [item.name] %}
+                {% set waste.items = waste.items + [item] %}
+              {% endif %}
+            {% endfor %}
+
+            {% set laundry = namespace(config=appliances, items=[]) %}
+            {% if not appliances %}
+              {% for e in wash_ids | select('match','^sensor[.]') | reject('in', excluded) %}
+                {# State-Sensor hat samples_recorded; unabhängig von Übersetzungen/Umbenennung. #}
+                {% if state_attr(e,'samples_recorded') is not none and state_attr(e,'icon') in ['mdi:washing-machine','mdi:tumble-dryer'] %}
+                  {% set d = device_id(e) %}
+                  {% set match = namespace(remaining='', progress='') %}
+                  {% for other in wash_ids if d and device_id(other) == d %}
+                    {% if state_attr(other,'device_class') == 'duration' and state_attr(other,'icon') == 'mdi:timer-sand' %}
+                      {% set match.remaining = other %}
+                    {% elif state_attr(other,'icon') == 'mdi:progress-clock' %}
+                      {% set match.progress = other %}
+                    {% endif %}
+                  {% endfor %}
+                  {% set laundry.config = laundry.config + [dict(name=device_attr(d,'name_by_user') or device_attr(d,'name') or e,
+                    state=e, remaining=match.remaining, progress=match.progress)] %}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+            {% set labels = {'off':'Aus','inactive':'Aus','idle':'Bereit','ready':'Bereit',
+              'starting':'Startet','running':'Läuft','run':'Ein','paused':'Pause','pause':'Pause',
+              'user_paused':'Pause','ending':'Wird fertig','finished':'Fertig',
+              'anti_wrinkle':'Knitterschutz','delay_wait':'Startverzögerung','delayedstart':'Start geplant',
+              'interrupted':'Unterbrochen','force_stopped':'Abgebrochen','aborting':'Wird beendet',
+              'actionrequired':'Aktion erforderlich','rinse':'Spülen','clean':'Fertig',
+              'error':'Fehler','unknown':'Unbekannt','unavailable':'Nicht verfügbar'} %}
+            {% for a in laundry.config %}
+              {% set state = states(a.state) %}
+              {% set remaining = states(a.get('remaining','')) | float(none) if a.get('remaining') else none %}
+              {% set unit = state_attr(a.get('remaining',''),'unit_of_measurement') if a.get('remaining') else none %}
+              {% set seconds = remaining * (3600 if unit == 'h' else (60 if unit == 'min' else 1)) if remaining is not none and unit in ['s','min','h'] else none %}
+              {% set finish = now() + timedelta(seconds=seconds) if seconds is not none and seconds >= 0 and state in ['running','starting','ending','rinse'] else none %}
+              {% set eta = (('morgen ' if finish.date() == (now()+timedelta(days=1)).date() else (finish.strftime('%d.%m. ') if finish.date() != now().date() else '')) + finish.strftime('%H:%M')) if finish else '' %}
+              {% set direct_end = states(a.get('endtime','')) if a.get('endtime') else '' %}
+              {% set direct_dt_raw = as_datetime(direct_end, none) if direct_end not in ['', 'unknown', 'unavailable'] else none %}
+              {% set direct_dt = as_local(direct_dt_raw) if direct_dt_raw is not none else none %}
+              {% set direct_eta = (('morgen ' if direct_dt and direct_dt.date() == (now()+timedelta(days=1)).date() else (direct_dt.strftime('%d.%m. ') if direct_dt and direct_dt.date() != now().date() else '')) + direct_dt.strftime('%H:%M')) if direct_dt else '' %}
+              {% set final_eta = direct_eta if direct_eta else eta %}
+              {% set final_state = state if state not in ['unknown','unavailable'] else (states(a.get('endtime','')) if a.get('endtime') else state) %}
+              {% set laundry.items = laundry.items + [dict(name=a.name, state=labels.get(final_state,final_state),
+                eta=final_eta, progress=states(a.get('progress','')) | float(none) if a.get('progress') else none,
+                program=state_attr(a.state,'current_program_guess'))] %}
+            {% endfor %}
+
+            {% set weather = state_attr('sensor.maxim_epaper_wetter','daily_json') %}
+            {% set weather = weather | from_json([]) if weather is string else (weather or []) %}
+            {% set forecast = namespace(items=[]) %}
+            {% if weather is sequence and weather is not string and weather is not mapping %}
+              {% for f in weather if f is mapping %}
+                {% set date = (f.get('datetime','') | string)[:10] %}
+                {% set dt = strptime(date,'%Y-%m-%d',none) %}
+                {% if dt is not none and dt.date() > now().date() and forecast.items | count < 5 %}
+                  {% set forecast.items = forecast.items + [dict(day=['Mo','Di','Mi','Do','Fr','Sa','So'][dt.weekday()],
+                    condition=f.get('condition',''), high=f.get('high',f.get('temperature')),
+                    low=f.get('low',f.get('templow')), rain=f.get('precipitation'))] %}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+            {# Entity-Autoerkennung; explizite Listen sind optional. #}
+            {% set house = namespace(windows=[], locks=[], batteries=[], lights=0, unknown_windows=0, unknown_locks=0) %}
+            {% set open_states = ['on','open','opening'] %}
+            {% for s in states.light if s.entity_id not in excluded and s.state == 'on' %}
+              {% set house.lights = house.lights + 1 %}
+            {% endfor %}
+            {% for s in states.binary_sensor if s.entity_id not in excluded %}
+              {% if s.entity_id in window_entities or (not window_entities and s.attributes.get('device_class') in ['window','opening','door']) %}
+                {% if s.state in open_states %}
+                  {% set house.windows = house.windows + [dict(id=s.entity_id, name=s.name)] %}
+                {% elif s.state in ['unknown','unavailable'] %}
+                  {% set house.unknown_windows = house.unknown_windows + 1 %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            {% for s in states.lock if s.entity_id not in excluded and (not lock_entities or s.entity_id in lock_entities) %}
+              {% set house.locks = house.locks + [dict(id=s.entity_id, name=s.name, state=s.state)] %}
+              {% if s.state in ['unknown','unavailable'] %}
+                {% set house.unknown_locks = house.unknown_locks + 1 %}
+              {% endif %}
+            {% endfor %}
+            {% for s in states.sensor if s.entity_id not in excluded and
+                 (s.entity_id in battery_entities or (not battery_entities and s.attributes.get('device_class') == 'battery' and s.attributes.get('unit_of_measurement') == '%')) %}
+              {% set level = s.state | float(none) %}
+              {% if level is not none and level <= low_battery_percent %}
+                {% set house.batteries = house.batteries + [dict(id=s.entity_id, name=s.name, level=level | round(0) | int)] %}
+              {% endif %}
+            {% endfor %}
+            {% for s in states.binary_sensor if s.entity_id not in excluded and
+                 (s.entity_id in battery_entities or (not battery_entities and s.attributes.get('device_class') == 'battery')) %}
+              {% if s.state == 'on' %}
+                {% set house.batteries = house.batteries + [dict(id=s.entity_id, name=s.name, level=none)] %}
+              {% endif %}
+            {% endfor %}
+            {% set shopping_raw = (shopping_response | default({}, true)).get(shopping_entity, {}).get('items', []) %}
+            {% set shopping = namespace(items=[]) %}
+            {% for item in shopping_raw if item is mapping and item.get('status','needs_action') == 'needs_action' %}
+              {% set shopping.items = shopping.items + [dict(uid=item.get('uid','') | string, summary=item.get('summary','') | string)] %}
+            {% endfor %}
+            {% set shopping_items = (shopping.items[-6:] | reverse | list) %}
+
+            {% set sf1 = states('sensor.solarflow_800_pro_solar_power1') | float(none) %}
+            {% set sf2 = states('sensor.solarflow_800_pro_solar_power2') | float(none) %}
+            {% set sf3 = states('sensor.solarflow_800_pro_solar_power3') | float(none) %}
+            {% set off = states('sensor.solarflow_2400_ac_plus_grid_off_power') | float(none) %}
+            {% set pv = sf1+sf2+sf3+([0,-off] | max) if sf1 is not none and sf2 is not none and sf3 is not none and off is not none else none %}
+            {% set water = states('sensor.epaper_energie_wasser_heute') | float(none) %}
+            {{ dict(version=1, updated=now().strftime('%d.%m. %H:%M'), timestamp=as_timestamp(now()) | int,
+              people=people.items, waste=waste.items, laundry=laundry.items,
+              house=dict(windows=house.windows, locks=house.locks, batteries=house.batteries,
+                lights=house.lights, unknown_windows=house.unknown_windows,
+                unknown_locks=house.unknown_locks),
+              shopping=dict(items=shopping_items, available=has_value(shopping_entity)),
+              weather=dict(condition=state_attr('sensor.maxim_epaper_wetter','condition'),
+                temperature=state_attr('sensor.maxim_epaper_wetter','outdoor_temperature') | float(none), days=forecast.items),
+              energy=dict(home=states('sensor.epaper_energie_haus_leistung') | float(none), pv=pv,
+                home_today=states('sensor.epaper_energie_haus_heute') | float(none),
+                pv_today=states('sensor.epaper_energie_pv_heute') | float(none),
+                gas=states('sensor.epaper_energie_gas_heute') | float(none),
+                water_l=water*1000 if water is not none else none,
+                battery=states('sensor.epaper_energie_speicher_ladezustand') | float(none))) | to_json }}
+
+# ESPHome API action: the item UID avoids ambiguity for duplicate shopping names.
+# Enable Home Assistant action calls for the ESPHome device in its integration settings.
+script:
+  epaper_shopping_complete:
+    alias: ePaper Einkauf abhaken
+    mode: queued
+    max: 4
+    fields:
+      item_uid:
+        description: Eindeutige Home-Assistant-UID (falls vorhanden)
+      item_name:
+        description: Anzeigename als Fallback
+    sequence:
+      - variables:
+          shopping_item: "{{ item_uid if item_uid | default('', true) | length > 0 else item_name | default('', true) }}"
+      - condition: template
+        value_template: "{{ shopping_item | length > 0 }}"
+      - action: todo.update_item
+        target:
+          entity_id: todo.einkaufsliste
+        data:
+          item: "{{ shopping_item }}"
+          status: completed
