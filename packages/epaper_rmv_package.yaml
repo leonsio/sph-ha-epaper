@@ -1,0 +1,53 @@
+# Home Assistant package, not an ESPHome include.
+# Source: sensor.frankfurt_main_nieder_eschbach
+# Explicit to_json preserves a proper JSON string for the ESPHome text sensor.
+template:
+  - triggers:
+      - trigger: state
+        entity_id: sensor.frankfurt_main_nieder_eschbach
+      - trigger: time_pattern
+        minutes: "/1"
+      - trigger: homeassistant
+        event: start
+    sensor:
+      - name: Epaper Elisa RMV
+        unique_id: epaper_elisa_rmv
+        default_entity_id: sensor.epaper_elisa_rmv
+        icon: mdi:subway
+        state: >-
+          {{ 'ok' if has_value('sensor.frankfurt_main_nieder_eschbach') else 'unavailable' }}
+        attributes:
+          payload: >-
+            {% set entity = 'sensor.frankfurt_main_nieder_eschbach' %}
+            {% set available = has_value(entity) %}
+            {% set source = states[entity] %}
+            {% set updated = as_timestamp(source.last_updated, 0) if source is defined and source is not none else 0 %}
+            {% set current = as_timestamp(now()) %}
+            {% set first = dict(direction=state_attr(entity, 'direction'),
+                                departure_time=state_attr(entity, 'departure_time'),
+                                product=state_attr(entity, 'product'),
+                                line=state_attr(entity, 'line')) %}
+            {% set following = state_attr(entity, 'next_departures') %}
+            {% set following = following if following is sequence and following is not string and following is not mapping else [] %}
+            {% set ns = namespace(rows=[], seen=[]) %}
+            {% if available %}
+              {% for dep in [first] + following | list %}
+                {% if dep is mapping %}
+                  {% set stamp = as_timestamp(dep.get('departure_time'), 0) %}
+                  {% set line = dep.get('line') | default('', true) | string %}
+                  {% set direction = dep.get('direction') | default('', true) | string %}
+                  {% set key = line ~ '|' ~ direction ~ '|' ~ stamp %}
+                  {% if stamp > 0 and stamp >= current - 59 and line and direction and key not in ns.seen %}
+                    {% set ns.seen = ns.seen + [key] %}
+                    {% set ns.rows = ns.rows + [dict(line=line, direction=direction,
+                        product=dep.get('product') | default('', true) | string,
+                        epoch=stamp | int, time=stamp | timestamp_custom('%H:%M', true),
+                        minutes=[0, ((stamp-current)/60) | round(0, 'ceil') | int] | max)] %}
+                  {% endif %}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+            {{ dict(available=available, departures=(ns.rows | sort(attribute='epoch'))[:12],
+                    generated=current | int,
+                    updated=(updated | timestamp_custom('%H:%M', true)) if updated else '--:--',
+                    stale=(updated == 0 or current-updated > 900)) | to_json }}
