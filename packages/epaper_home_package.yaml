@@ -1,13 +1,28 @@
 # Einmalig unter /config/packages/epaper_home_package.yaml installieren.
 # Alle Räume und Entitäten werden dynamisch ermittelt; keine Geräte-IDs pflegen.
+# v4.2.1: Snapshot bei HA-Start und alle 15s auf Start/Übersicht/Haussteuerung.
+# Ersetzt das bisherige Home-Paket unter demselben Installations-Dateinamen.
 # Raumzuordnung wird mit area_id(entity) inklusive Geräte-Vererbung aufgelöst.
+# HA-Etagen-Zuordnung über floors() + floor_areas(), NICHT nur floor_name(area).
+# Manche area-IDs werden bei floor_name(area) nicht erkannt (z.B. bad_dachgeschoss).
+# Bereits vorhandene HA-Zuordnungen haben Vorrang vor konfigurierbaren Fallbacks.
+# Räume ohne Zuordnung und ohne Fallback erhalten "Ohne Etage".
 # Optionales HA-Label epaper_ausblenden blendet einzelne Entitäten aus.
 template:
 - triggers:
   - trigger: homeassistant
     event: start
+  - trigger: event
+    event_type: event_template_reloaded
+  - trigger: state
+    entity_id: sensor.e1003_aktive_seite
   - trigger: time_pattern
-    seconds: /5
+    seconds: /15
+  conditions:
+  - condition: template
+    value_template: >-
+      {{ trigger.platform in ['homeassistant', 'event'] or
+         states('sensor.e1003_aktive_seite') in ['0', '1', '8'] }}
   sensor:
   - name: ePaper Home Rooms
     unique_id: epaper_home_rooms
@@ -15,10 +30,36 @@ template:
     icon: mdi:home
     state: ready
     attributes:
+      generated_at: "{{ now().isoformat() }}"
       payload: |-
         {% set out = namespace(rooms=[]) %}
         {% set excluded = label_entities('epaper_ausblenden') %}
         {% set candidates = (states.light | list) + (states.cover | list) + (states.climate | list) %}
+        {# Fallback nur fuer momentan im HA-Payload nicht erkannte Etagenzuordnungen.
+           Die Werte sind aus der gelieferten Home-Assistant-Raumuebersicht abgeleitet.
+           Umbenannte/neu hinzugefuegte Raeume hier bei Bedarf ergaenzen. #}
+        {% set floor_fallback = {
+          'bad_dachgeschoss': 'Dachgeschoss',
+          'bad_obergeschoss': 'Obergeschoss',
+          'elisa_zimmer': 'Obergeschoss',
+          'flur_obergeschoss': 'Obergeschoss',
+          'maxim_zimmer': 'Obergeschoss',
+          'bad_erdgeschoss': 'Erdgeschoß',
+          'flur_erdgeschoss': 'Erdgeschoß',
+          'kuche': 'Erdgeschoß',
+          'flur_untergeschoss': 'Untergeschoss',
+          'gastezimmer': 'Untergeschoss'
+        } %}
+        {# Nutze floor_areas(): prueft explizit die HA-Etagen-Mitgliedschaft anhand der Area-ID. #}
+        {% set assigned = namespace(by_area={}) %}
+        {% for floor in floors() %}
+          {% set name = floor_name(floor) %}
+          {% if name %}
+            {% for area_on_floor in floor_areas(floor) %}
+              {% set assigned.by_area = dict(assigned.by_area, **{area_on_floor: name}) %}
+            {% endfor %}
+          {% endif %}
+        {% endfor %}
         {% for area in areas() | sort %}
           {% set room = namespace(entities=[]) %}
           {% for s in candidates | sort(attribute='name') %}
@@ -37,7 +78,9 @@ template:
             {% endif %}
           {% endfor %}
           {% if room.entities | count > 0 %}
-            {% set out.rooms = out.rooms + [dict(id=area, n=area_name(area), entities=room.entities)] %}
+            {% set floor = assigned.by_area.get(area) or floor_name(area_name(area)) or floor_fallback.get(area) or 'Ohne Etage' %}
+            {% set out.rooms = out.rooms + [dict(id=area, n=area_name(area),
+              floor=floor, entities=room.entities)] %}
           {% endif %}
         {% endfor %}
         {{ dict(rooms=out.rooms | sort(attribute='n')) | to_json }}
