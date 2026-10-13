@@ -1,0 +1,296 @@
+# ePaper E1003 Energy Flow – for the user's Shelly Pro 3EM / Zendure SF800 Pro /
+# Zendure SolarFlow 2400 AC+ / AI-on-the-edge gas and water counters.
+# Install as /config/packages/epaper_energy_package.yaml.
+# Do NOT add this to the existing epaper_home_package.yaml; both packages coexist.
+# IMPORTANT: SF2400 AC+ PV is supplied by a micro-inverter on the bidirectional
+# Off-grid AC port. In this installation, grid_off_power < 0 means PV input.
+# SF2400 aggr_grid_off_power is negative / state_class total: use integrated
+# positive power for its new accumulated solar-energy sensor instead.
+# Day counters created here start tracking at installation, not retroactively.
+# The user must verify the signed off-grid direction once with PV turned on/off.
+
+template:
+  - sensor:
+      - name: ePaper Energie SolarFlow 2400 Offgrid PV Leistung
+        unique_id: epaper_energy_2400_offgrid_pv_power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        availability: >-
+          {{ is_number(states('sensor.solarflow_2400_ac_plus_grid_off_power')) }}
+        state: >-
+          {{ ([0, -(states('sensor.solarflow_2400_ac_plus_grid_off_power') | float(0))] | max) | round(1) }}
+
+      - name: ePaper Energie PV Leistung
+        unique_id: epaper_energy_pv_power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        availability: >-
+          {{ is_number(states('sensor.solarflow_800_pro_solar_input_power'))
+             and is_number(states('sensor.epaper_energie_solarflow_2400_offgrid_pv_leistung')) }}
+        state: >-
+          {{ ((states('sensor.solarflow_800_pro_solar_input_power') | float(0))
+              + (states('sensor.epaper_energie_solarflow_2400_offgrid_pv_leistung') | float(0))) | round(1) }}
+
+      - name: ePaper Energie Netz Bezug Leistung
+        unique_id: epaper_energy_grid_import_power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        availability: >-
+          {{ is_number(states('sensor.shellypro3em_34987a46a120_total_active_power')) }}
+        state: >-
+          {{ ([0, (states('sensor.shellypro3em_34987a46a120_total_active_power') | float(0))] | max) | round(1) }}
+
+      - name: ePaper Energie Netz Einspeisung Leistung
+        unique_id: epaper_energy_grid_export_power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        availability: >-
+          {{ is_number(states('sensor.shellypro3em_34987a46a120_total_active_power')) }}
+        state: >-
+          {{ ([0, -(states('sensor.shellypro3em_34987a46a120_total_active_power') | float(0))] | max) | round(1) }}
+
+      - name: ePaper Energie Speicher Ladeleistung
+        unique_id: epaper_energy_battery_charge_power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        availability: >-
+          {{ is_number(states('sensor.solarflow_800_pro_output_pack_power'))
+             and is_number(states('sensor.solarflow_2400_ac_plus_output_pack_power')) }}
+        state: >-
+          {{ (states('sensor.solarflow_800_pro_output_pack_power') | float(0)
+              + states('sensor.solarflow_2400_ac_plus_output_pack_power') | float(0)) | round(1) }}
+
+      - name: ePaper Energie Speicher Entladeleistung
+        unique_id: epaper_energy_battery_discharge_power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        availability: >-
+          {{ is_number(states('sensor.solarflow_800_pro_pack_input_power'))
+             and is_number(states('sensor.solarflow_2400_ac_plus_pack_input_power')) }}
+        state: >-
+          {{ (states('sensor.solarflow_800_pro_pack_input_power') | float(0)
+              + states('sensor.solarflow_2400_ac_plus_pack_input_power') | float(0)) | round(1) }}
+
+      - name: ePaper Energie Haus Leistung
+        unique_id: epaper_energy_home_power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        # Energy balance, not an independently measured consumer meter.
+        # May differ slightly due to AC/DC conversion losses and update delay.
+        availability: >-
+          {{ is_number(states('sensor.epaper_energie_pv_leistung'))
+             and is_number(states('sensor.shellypro3em_34987a46a120_total_active_power'))
+             and is_number(states('sensor.epaper_energie_speicher_entladeleistung'))
+             and is_number(states('sensor.epaper_energie_speicher_ladeleistung')) }}
+        state: >-
+          {{ ([0,
+                states('sensor.epaper_energie_pv_leistung') | float(0)
+                + states('sensor.shellypro3em_34987a46a120_total_active_power') | float(0)
+                + states('sensor.epaper_energie_speicher_entladeleistung') | float(0)
+                - states('sensor.epaper_energie_speicher_ladeleistung') | float(0)
+              ] | max) | round(1) }}
+
+      - name: ePaper Energie Speicher Ladezustand
+        unique_id: epaper_energy_battery_soc
+        unit_of_measurement: '%'
+        device_class: battery
+        state_class: measurement
+        # Weight SoC by installed capacity; arithmetic averaging would be wrong
+        # because SF800 and SF2400 have different pack capacities.
+        availability: >-
+          {{ is_number(states('sensor.solarflow_800_pro_electric_level'))
+             and is_number(states('sensor.solarflow_2400_ac_plus_electric_level'))
+             and is_number(states('sensor.solarflow_800_pro_total_kwh'))
+             and is_number(states('sensor.solarflow_2400_ac_plus_total_kwh'))
+             and (states('sensor.solarflow_800_pro_total_kwh') | float(0)
+                  + states('sensor.solarflow_2400_ac_plus_total_kwh') | float(0)) > 0 }}
+        state: >-
+          {% set c1 = states('sensor.solarflow_800_pro_total_kwh') | float(0) %}
+          {% set c2 = states('sensor.solarflow_2400_ac_plus_total_kwh') | float(0) %}
+          {{ ((states('sensor.solarflow_800_pro_electric_level') | float(0) * c1
+              + states('sensor.solarflow_2400_ac_plus_electric_level') | float(0) * c2)
+              / (c1 + c2)) | round(1) if c1+c2>0 else none }}
+
+      - name: ePaper Energie PV Leistung Gesamt
+        unique_id: epaper_energy_pv_energy_total
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: total_increasing
+        availability: >-
+          {{ is_number(states('sensor.solarflow_800_pro_aggr_solar'))
+             and is_number(states('sensor.epaper_energie_sf2400_offgrid_pv_gesamt')) }}
+        state: >-
+          {{ (states('sensor.solarflow_800_pro_aggr_solar') | float(0)
+              + states('sensor.epaper_energie_sf2400_offgrid_pv_gesamt') | float(0)) | round(4) }}
+
+      - name: ePaper Energie Speicher Ladung Gesamt
+        unique_id: epaper_energy_battery_charge_total
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: total_increasing
+        availability: >-
+          {{ is_number(states('sensor.solarflow_800_pro_aggr_charge'))
+             and is_number(states('sensor.solarflow_2400_ac_plus_aggr_charge')) }}
+        state: >-
+          {{ (states('sensor.solarflow_800_pro_aggr_charge') | float(0)
+              + states('sensor.solarflow_2400_ac_plus_aggr_charge') | float(0)) | round(4) }}
+
+      - name: ePaper Energie Speicher Entladung Gesamt
+        unique_id: epaper_energy_battery_discharge_total
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: total_increasing
+        availability: >-
+          {{ is_number(states('sensor.solarflow_800_pro_aggr_discharge'))
+             and is_number(states('sensor.solarflow_2400_ac_plus_aggr_discharge')) }}
+        state: >-
+          {{ (states('sensor.solarflow_800_pro_aggr_discharge') | float(0)
+              + states('sensor.solarflow_2400_ac_plus_aggr_discharge') | float(0)) | round(4) }}
+
+      - name: ePaper Energie Haus Heute
+        unique_id: epaper_energy_home_today
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: measurement
+        # Daily energy balance; theoretical site consumption including losses.
+        availability: >-
+          {{ is_number(states('sensor.epaper_energie_pv_heute'))
+             and is_number(states('sensor.epaper_energie_netz_bezug_heute'))
+             and is_number(states('sensor.epaper_energie_netz_einspeisung_heute'))
+             and is_number(states('sensor.epaper_energie_speicher_ladung_heute'))
+             and is_number(states('sensor.epaper_energie_speicher_entladung_heute')) }}
+        state: >-
+          {{ ([0,
+              states('sensor.epaper_energie_pv_heute') | float(0)
+              + states('sensor.epaper_energie_netz_bezug_heute') | float(0)
+              - states('sensor.epaper_energie_netz_einspeisung_heute') | float(0)
+              + states('sensor.epaper_energie_speicher_entladung_heute') | float(0)
+              - states('sensor.epaper_energie_speicher_ladung_heute') | float(0)
+              ] | max) | round(3) }}
+
+  # The underlying counters continue normally; the ePaper JSON payload is
+  # generated on entry and at most on the hourly timer while Energy (9) is open.
+  - triggers:
+      - trigger: state
+        entity_id: sensor.e1003_aktive_seite
+        to: '9'
+      - trigger: time_pattern
+        minutes: '0'
+    conditions:
+      - condition: template
+        value_template: "{{ is_state('sensor.e1003_aktive_seite', '9') }}"
+    sensor:
+      - name: ePaper Energy Flow
+        unique_id: epaper_energy_flow
+        default_entity_id: sensor.epaper_energy_flow
+        icon: mdi:transmission-tower
+        state: ready
+        attributes:
+          payload: >-
+            {% set numbers = {
+              'pv': {
+                'energy_today': states('sensor.epaper_energie_pv_heute') | float(none),
+                'sf800_power': states('sensor.solarflow_800_pro_solar_input_power') | float(none),
+                'sf800_today': states('sensor.epaper_energie_sf800_pv_heute') | float(none),
+                'sf2400_offgrid_power': states('sensor.epaper_energie_solarflow_2400_offgrid_pv_leistung') | float(none),
+                'sf2400_offgrid_today': states('sensor.epaper_energie_sf2400_offgrid_pv_heute') | float(none)
+              },
+              'grid': {
+                'power_signed': states('sensor.shellypro3em_34987a46a120_total_active_power') | float(none),
+                'import_power': states('sensor.epaper_energie_netz_bezug_leistung') | float(none),
+                'export_power': states('sensor.epaper_energie_netz_einspeisung_leistung') | float(none),
+                'import_today': states('sensor.epaper_energie_netz_bezug_heute') | float(none),
+                'export_today': states('sensor.epaper_energie_netz_einspeisung_heute') | float(none)
+              },
+              'battery': {
+                'charge_power': states('sensor.epaper_energie_speicher_ladeleistung') | float(none),
+                'discharge_power': states('sensor.epaper_energie_speicher_entladeleistung') | float(none),
+                'charge_today': states('sensor.epaper_energie_speicher_ladung_heute') | float(none),
+                'discharge_today': states('sensor.epaper_energie_speicher_entladung_heute') | float(none),
+                'soc': states('sensor.epaper_energie_speicher_ladezustand') | float(none),
+                'sf800_soc': states('sensor.solarflow_800_pro_electric_level') | float(none),
+                'sf2400_soc': states('sensor.solarflow_2400_ac_plus_electric_level') | float(none)
+              },
+              'home': {
+                'energy_today': states('sensor.epaper_energie_haus_heute') | float(none)
+              },
+              'gas': {
+                'today': states('sensor.epaper_energie_gas_heute') | float(none),
+                'meter_total': states('sensor.gasmeter_main_actual_value') | float(none),
+                'status': states('sensor.gasmeter_main_value_status'),
+                'last_processed': states('sensor.gasmeter_main_last_processed')
+              },
+              'water': {
+                'today': states('sensor.epaper_energie_wasser_heute') | float(none),
+                'meter_total': states('sensor.watermeter_main_actual_value') | float(none),
+                'status': states('sensor.watermeter_main_value_status'),
+                'last_processed': states('sensor.watermeter_main_last_processed')
+              },
+              'co2_neutral': {
+                'energy_today': none
+              }
+            } %}
+            {{ dict(updated=now().isoformat(), **numbers) | to_json }}
+
+# SF2400 PV enters via the AC off-grid port. The official Zendure energy
+# total for that port is signed/negative (not a positive total_increasing).
+# Integrate the normalized positive input power instead. This begins counting
+# only after the package is installed.
+sensor:
+  - platform: integration
+    source: sensor.epaper_energie_solarflow_2400_offgrid_pv_leistung
+    name: ePaper Energie SF2400 Offgrid PV Gesamt
+    unique_id: epaper_energy_sf2400_offgrid_pv_total
+    unit_prefix: k
+    unit_time: h
+    round: 4
+    method: left
+
+utility_meter:
+  epaper_energie_sf800_pv_heute:
+    name: ePaper Energie SF800 PV Heute
+    source: sensor.solarflow_800_pro_aggr_solar
+    cycle: daily
+  epaper_energie_sf2400_offgrid_pv_heute:
+    name: ePaper Energie SF2400 Offgrid PV Heute
+    source: sensor.epaper_energie_sf2400_offgrid_pv_gesamt
+    cycle: daily
+  epaper_energie_pv_heute:
+    name: ePaper Energie PV Heute
+    source: sensor.epaper_energie_pv_leistung_gesamt
+    cycle: daily
+  epaper_energie_netz_bezug_heute:
+    name: ePaper Energie Netz Bezug Heute
+    source: sensor.shellypro3em_34987a46a120_total_active_energy
+    cycle: daily
+  epaper_energie_netz_einspeisung_heute:
+    name: ePaper Energie Netz Einspeisung Heute
+    source: sensor.shellypro3em_34987a46a120_total_active_returned_energy
+    cycle: daily
+  epaper_energie_speicher_ladung_heute:
+    name: ePaper Energie Speicher Ladung Heute
+    source: sensor.epaper_energie_speicher_ladung_gesamt
+    cycle: daily
+  epaper_energie_speicher_entladung_heute:
+    name: ePaper Energie Speicher Entladung Heute
+    source: sensor.epaper_energie_speicher_entladung_gesamt
+    cycle: daily
+  epaper_energie_gas_heute:
+    name: ePaper Energie Gas Heute
+    source: sensor.gasmeter_main_actual_value
+    cycle: daily
+  epaper_energie_wasser_heute:
+    name: ePaper Energie Wasser Heute
+    source: sensor.watermeter_main_actual_value
+    cycle: daily
+
+# Sum device-provided monotonic energy totals before Utility Meter.
+# The combined total excludes current values when either source is unavailable.
+# Name-based entity IDs below are used by utility_meter above and the payload.

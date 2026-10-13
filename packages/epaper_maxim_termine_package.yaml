@@ -1,0 +1,44 @@
+# Optional SPH calendar feed for Maxim's overview. Place under /config/packages/.
+# Adjust calendar.sph_maxim_mk if your SPH integration uses separate calendars.
+template:
+  - triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: time_pattern
+        minutes: /30
+      - trigger: state
+        entity_id: sensor.e1003_aktive_seite
+        to: '2'
+    actions:
+      - variables:
+          school_calendar: calendar.sph_maxim_mk
+          school_events: {}
+      - if:
+          - condition: template
+            value_template: "{{ has_value(school_calendar) }}"
+        then:
+          - action: calendar.get_events
+            continue_on_error: true
+            target:
+              entity_id: "{{ school_calendar }}"
+            data:
+              start_date_time: "{{ now().isoformat() }}"
+              end_date_time: "{{ (now() + timedelta(days=30)).isoformat() }}"
+            response_variable: school_events
+    sensor:
+      - name: ePaper Maxim Termine
+        unique_id: epaper_maxim_termine
+        default_entity_id: sensor.epaper_maxim_termine
+        icon: mdi:calendar-school
+        state: "{{ now().isoformat() }}"
+        attributes:
+          payload: >-
+            {% set results=school_events.get(school_calendar,{}).get('events',[]) %}
+            {% set ns=namespace(items=[]) %}
+            {% for e in results if e is mapping %}
+              {% set dt=e.get('start','') | string %}
+              {% if dt|length>=10 %}
+                {% set ns.items=ns.items+[dict(date=dt[:10],summary=e.get('summary','Termin'))] %}
+              {% endif %}
+            {% endfor %}
+            {{ dict(events=ns.items[:30]) | to_json }}

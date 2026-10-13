@@ -1,28 +1,26 @@
-# Einmalig unter /config/packages/epaper_home_package.yaml installieren.
-# Alle Räume und Entitäten werden dynamisch ermittelt; keine Geräte-IDs pflegen.
-# v4.2.1: Snapshot bei HA-Start und alle 15s auf Start/Übersicht/Haussteuerung.
-# Ersetzt das bisherige Home-Paket unter demselben Installations-Dateinamen.
-# Raumzuordnung wird mit area_id(entity) inklusive Geräte-Vererbung aufgelöst.
-# HA-Etagen-Zuordnung über floors() + floor_areas(), NICHT nur floor_name(area).
-# Manche area-IDs werden bei floor_name(area) nicht erkannt (z.B. bad_dachgeschoss).
-# Bereits vorhandene HA-Zuordnungen haben Vorrang vor konfigurierbaren Fallbacks.
-# Räume ohne Zuordnung und ohne Fallback erhalten "Ohne Etage".
-# Optionales HA-Label epaper_ausblenden blendet einzelne Entitäten aus.
+# v4.2.23: Zustandsereignisse + 5s-Abgleich, unabhängig vom Displayseitensensor.
+# Vorhandenes /config/packages/epaper_home_package.yaml ERSETZEN, nicht zusätzlich installieren.
 template:
 - triggers:
   - trigger: homeassistant
     event: start
+    id: startup
   - trigger: event
     event_type: event_template_reloaded
-  - trigger: state
-    entity_id: sensor.e1003_aktive_seite
+    id: reload
+  - trigger: event
+    event_type: state_changed
+    id: device_state
+  - trigger: event
+    event_type: epaper_home_refresh
+    id: requested
   - trigger: time_pattern
-    seconds: /15
+    seconds: /5
+    id: poll
   conditions:
   - condition: template
-    value_template: >-
-      {{ trigger.platform in ['homeassistant', 'event'] or
-         states('sensor.e1003_aktive_seite') in ['0', '1', '8'] }}
+    value_template: '{{ trigger.id != ''device_state'' or (trigger.event.data.entity_id | default('''')).split(''.'')[0]
+      in [''light'', ''cover'', ''climate''] }}'
   sensor:
   - name: ePaper Home Rooms
     unique_id: epaper_home_rooms
@@ -30,7 +28,7 @@ template:
     icon: mdi:home
     state: ready
     attributes:
-      generated_at: "{{ now().isoformat() }}"
+      generated_at: '{{ now().isoformat() }}'
       payload: |-
         {% set out = namespace(rooms=[]) %}
         {% set excluded = label_entities('epaper_ausblenden') %}
@@ -95,7 +93,7 @@ script:
         description: Zielentität aus der dynamischen Raumliste
       operation:
         required: true
-        description: on/off/brightness/open/stop/close/temperature/mode
+        description: toggle/on/off/brightness/open/stop/close/temperature/mode
       value:
         required: false
         description: Zahlenwert oder Heizmodus
@@ -115,6 +113,13 @@ script:
       - stop: Entität nicht verfügbar oder nicht für diese Steuerung zugelassen.
         error: true
     - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ domain == ''light'' and operation == ''toggle'' }}'
+        sequence:
+        - action: light.toggle
+          target:
+            entity_id: '{{ entity }}'
       - conditions:
         - condition: template
           value_template: '{{ domain == ''light'' and operation == ''on'' }}'
@@ -187,3 +192,7 @@ script:
       default:
       - stop: Aktion wird von dieser Entität nicht unterstützt.
         error: true
+    - event: epaper_home_refresh
+      event_data:
+        entity_id: '{{ entity }}'
+        operation: '{{ operation }}'
