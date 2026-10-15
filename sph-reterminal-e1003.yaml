@@ -52,7 +52,6 @@
 # Each user change explicitly stores and flushes this small configuration value.
 # Reference: ESPHome 2026.9.0 template_switch.cpp / globals_component.h.
 substitutions:
-  screensaver_test_file: test_bild.bmp  # alternativ test_bild.png, danach neu kompilieren
   elisa_rmv_entity: sensor.epaper_elisa_rmv
   elisa_keep_awake: "true"  # Abfahrtstafel bleibt fuer aktuelle Minutenangaben wach.
   start_dashboard_entity: sensor.epaper_start_dashboard
@@ -86,7 +85,6 @@ external_components:
 sd_screensaver:
   id: sd_photos
   display_id: epaper
-  test_image_id: screensaver_test_image
 esphome:
   name: maxim-epaper-e1003
   friendly_name: Maxim ePaper E1003
@@ -308,11 +306,6 @@ deep_sleep:
   sleep_duration: ${deep_sleep_wakeup_interval}
 json: null
 image:
-  - platform: file
-    file: ${screensaver_test_file}
-    id: screensaver_test_image
-    type: GRAYSCALE
-    dither: NONE
   # True 1-bit alpha masks; the letter/leaf is transparent against the white card.
   - platform: file
     file: icons/waste_rest.png
@@ -340,6 +333,10 @@ image:
     type: BINARY
     transparency: chroma_key
 font:
+- file: fonts/NotoSansMono-ExtraBold.ttf
+  id: font_screensaver_clock
+  size: 500
+  glyphs: "0123456789:"
 - file: fonts/MaterialDesignIconsDesktop.ttf
   id: mdi_start
   size: 42
@@ -1152,15 +1149,16 @@ select:
     - lambda: esphome::global_preferences->sync();
 - platform: template
   id: screensaver_source
-  name: E1003 Screensaver Bildquelle
+  name: E1003 Screensaver Darstellung
   entity_category: config
   icon: mdi:image-multiple
   optimistic: true
   restore_value: true
-  initial_option: "Testbild (Firmware)"
+  initial_option: "Bild"
   options:
-    - "Testbild (Firmware)"
-    - "SD-Karte"
+    - "Bild"
+    - "Digitale Uhr"
+    - "Analoge Uhr"
   on_value:
     then:
     - lambda: |-
@@ -1173,10 +1171,10 @@ switch:
   entity_category: config
   icon: mdi:image-multiple
   restore_mode: DISABLED
-  lambda: return id(screensaver_enabled) && (id(screensaver_source).current_option()=="Testbild (Firmware)" || id(sd_photos).ready());
+  lambda: return id(screensaver_enabled) && (id(screensaver_source).current_option()!="Bild" || id(sd_photos).ready());
   turn_on_action:
     - lambda: |-
-        if(!(id(screensaver_source).current_option()=="Testbild (Firmware)" || id(sd_photos).ready())){
+        if(!(id(screensaver_source).current_option()!="Bild" || id(sd_photos).ready())){
           id(screensaver_switch).publish_state(false);
           ESP_LOGW("sd_screensaver","Screensaver abgelehnt: keine lesbare SD-Karte");
           return;
@@ -1787,17 +1785,19 @@ script:
       then:
       - lambda: |-
           id(sd_photos).poll_card();
-          id(screensaver_switch).publish_state(id(screensaver_enabled) && (id(screensaver_source).current_option()=="Testbild (Firmware)" || id(sd_photos).ready()));
+          id(screensaver_switch).publish_state(id(screensaver_enabled) && (id(screensaver_source).current_option()!="Bild" || id(sd_photos).ready()));
           id(screensaver_count).publish_state(id(sd_photos).count());
-          if(!id(screensaver_enabled) || !(id(screensaver_source).current_option()=="Testbild (Firmware)" || id(sd_photos).ready())){
+          if(!id(screensaver_enabled) || !(id(screensaver_source).current_option()!="Bild" || id(sd_photos).ready())){
             if(id(sd_photos).active() || id(sd_photos).resume_requested())id(screensaver_stop).execute();
             return;
           }
           const uint32_t start=std::stoul(std::string(id(screensaver_start).current_option().c_str()));
-          const uint32_t interval=std::stoul(std::string(id(screensaver_interval).current_option().c_str()));
-          if(id(sd_photos).due(start,interval)){
+          const bool clock=id(screensaver_source).current_option()!="Bild";
+          auto clock_now=id(ha_time).now();
+          const uint32_t interval=clock?1:std::stoul(std::string(id(screensaver_interval).current_option().c_str()));
+          if(id(sd_photos).due(start,interval) || (clock && id(sd_photos).active() && clock_now.is_valid() && id(sd_photos).clock_minute()!=clock_now.timestamp/60)){
             id(refresh_busy)=true;
-            if(id(sd_photos).next(id(screensaver_source).current_option()=="Testbild (Firmware)")){
+            if(clock ? id(sd_photos).next_clock(clock_now.is_valid()?clock_now.timestamp/60:0) : id(sd_photos).next()){
               id(screensaver_filename).publish_state(id(sd_photos).filename());
               id(screensaver_count).publish_state(id(sd_photos).count());
               id(screensaver_show).execute();
@@ -1823,7 +1823,12 @@ script:
       id(refresh_busy)=false;
       id(initial_render_done)=true;
       ESP_LOGI("sd_screensaver","Vollbild GC16 abgeschlossen (ohne Cleanup-Bild)");
-  - script.execute: deep_sleep_idle
+  - if:
+      condition:
+        not:
+          script.is_running: deep_sleep_idle
+      then:
+      - script.execute: deep_sleep_idle
 - id: navigation_visibility_store
   mode: single
   then:
@@ -2064,7 +2069,7 @@ script:
       - wait_until:
           condition:
             lambda: |-
-              if(id(screensaver_enabled) && (id(screensaver_source).current_option()=="Testbild (Firmware)" || id(sd_photos).ready()))
+              if(id(screensaver_enabled) && (id(screensaver_source).current_option()!="Bild" || id(sd_photos).ready()))
                 return id(sd_photos).active() && !id(refresh_busy) && id(sd_photos).display_idle() &&
                        id(e1003_usb_power).has_state() && !id(e1003_usb_power).state;
               return (id(current_page)!=9 || !${energy_keep_awake}) && (id(current_page)!=10 || !${solar_keep_awake}) && (id(current_page)!=2 || !${maxim_keep_awake}) && (id(current_page)!=11 || !${elisa_keep_awake});
@@ -2117,9 +2122,11 @@ script:
                 lambda: return id(sd_photos).display_idle();
           - lambda: |-
               if(id(sd_photos).active()){
-                const uint32_t minutes=std::stoul(std::string(id(screensaver_interval).current_option().c_str()));
+                const bool clock=id(screensaver_source).current_option()!="Bild";
+                const uint32_t minutes=clock?1:std::stoul(std::string(id(screensaver_interval).current_option().c_str()));
                 id(sd_photos).prepare_sleep();
-                id(deep_sleep_control).set_sleep_duration(id(sd_photos).remaining_ms(minutes));
+                auto now=id(ha_time).now();
+                id(deep_sleep_control).set_sleep_duration(clock && now.is_valid() ? (60-now.second)*1000UL : id(sd_photos).remaining_ms(minutes));
               }
           - delay: 250ms
           - if:
@@ -2630,7 +2637,62 @@ display:
   rotation: 0
   lambda: |
     if(id(sd_photos).active()){
-      id(sd_photos).render();
+      if(id(screensaver_source).current_option()=="Bild"){
+        id(sd_photos).render();
+        return;
+      }
+      const int W=it.get_width(), H=it.get_height();
+      const Color ink=Color::BLACK;
+      it.fill(Color::WHITE);
+      auto now=id(ha_time).now();
+      if(!now.is_valid()){
+        it.print(W/2,H/2,id(font_weather_condition),ink,TextAlign::CENTER,"Uhrzeit wird synchronisiert");
+        return;
+      }
+      static const char *days[]={"", "Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"};
+      if(id(screensaver_source).current_option()=="Analoge Uhr"){
+        const int cx=W/2, cy=(H-190)/2, r=std::min(W/2-30,cy-20);
+        it.circle(cx,cy,r,ink);
+        for(int m=0;m<60;m++){
+          const double a=m*3.141592653589793/30.0-3.141592653589793/2;
+          const int inner=r-(m%5==0?42:17);
+          for(int offset=-1;offset<=1;offset++)
+            it.line(cx+int(inner*cos(a))+offset,cy+int(inner*sin(a)),cx+int((r-8)*cos(a))+offset,cy+int((r-8)*sin(a)),ink);
+          if(m%5==0)it.printf(cx+int((r-85)*cos(a)),cy+int((r-85)*sin(a)),id(font_start_weather),ink,TextAlign::CENTER,"%d",m==0?12:m/5);
+        }
+        auto hand=[&](double a,int length,int width){
+          a=a*3.141592653589793/30.0-3.141592653589793/2;
+          const int ex=cx+int(length*cos(a)),ey=cy+int(length*sin(a));
+          const int dx=int(width*sin(a)),dy=-int(width*cos(a));
+          it.filled_triangle(cx+dx,cy+dy,cx-dx,cy-dy,ex,ey,ink);
+        };
+        hand((now.hour%12)*5+now.minute/12.0,int(r*0.55),18);
+        hand(now.minute,int(r*0.79),11);
+        it.filled_circle(cx,cy,24,ink);
+      }else{
+        it.printf(W/2,(H-190)/2,id(font_screensaver_clock),ink,TextAlign::CENTER,"%02d:%02d",now.hour,now.minute);
+      }
+      it.printf(W/2,H-155,id(font_weather_condition),ink,TextAlign::CENTER,"%s, %02d.%02d.%04d",days[now.day_of_week],now.day_of_month,now.month,now.year);
+      const std::string condition=id(epaper_weather_condition).state;
+      const char *weather="Wetter nicht verfügbar";
+      if(condition=="sunny")weather="Sonnig";
+      else if(condition=="clear-night")weather="Klare Nacht";
+      else if(condition=="partlycloudy")weather="Teilweise bewölkt";
+      else if(condition=="cloudy")weather="Bewölkt";
+      else if(condition=="fog")weather="Nebel";
+      else if(condition=="rainy")weather="Regen";
+      else if(condition=="pouring")weather="Starker Regen";
+      else if(condition=="snowy")weather="Schnee";
+      else if(condition=="snowy-rainy")weather="Schneeregen";
+      else if(condition=="hail")weather="Hagel";
+      else if(condition=="lightning" || condition=="lightning-rainy")weather="Gewitter";
+      else if(condition=="windy" || condition=="windy-variant")weather="Windig";
+      else if(condition=="exceptional")weather="Außergewöhnlich";
+      const std::string raw=id(weather_outdoor_temperature).state;
+      char *end=nullptr;float temperature=strtof(raw.c_str(),&end);
+      if(end!=raw.c_str() && std::isfinite(temperature))
+        it.printf(W/2,H-65,id(font_weather_condition),ink,TextAlign::CENTER,"%s · %.1f °C",weather,temperature);
+      else it.printf(W/2,H-65,id(font_weather_condition),ink,TextAlign::CENTER,"%s · -- °C",weather);
       return;
     }
     // Native 1872 x 1404 renderer. No old page or centered 800 x 480 canvas.
@@ -5629,3 +5691,4 @@ display:
     ESP_LOGD("weather_timing","Wetterseite GC16/Gray4 aufgebaut in %u ms",
              (unsigned)(millis()-weather_t0));
     }
+

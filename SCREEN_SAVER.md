@@ -2,12 +2,9 @@
 
 ## Dateien installieren
 
-Das ZIP im ESPHome-Verzeichnis entpacken. Die YAML ersetzt `sph-reterminal-e1003.yaml`.
-Den Ordner `components/sd_screensaver` vollständig mitkopieren; er muss relativ zur YAML
-unter `components` liegen. Die drei vorhandenen `.h`-Includes sind mitgeliefert.
-Deine bestehenden Ordner `fonts`, `icons` und `secrets.yaml` bleiben erforderlich.
-Die eigentlichen Testbilder sind nicht im ZIP: deine vorhandene `test_bild.bmp`
-muss direkt neben der YAML liegen.
+Repository aktualisieren und `sph-reterminal-e1003.yaml` zusammen mit
+`components/sd_screensaver` verwenden. Fonts, Icons und secrets.yaml bleiben erforderlich.
+Es wird kein Screensaver-Testbild mehr in die Firmware eingebettet.
 
 ESPHome **2026.9.0 oder neuer**, ESP-IDF, 16 MB Flash und PSRAM sind erforderlich.
 
@@ -21,56 +18,37 @@ nicht mit der ESP32-Toolchain kompiliert und nicht auf einem E1003 getestet.
 Die Konfiguration und der lokale Bildleser wurden geprüft; der erste Build
 und die SD-/Display-Prüfung erfolgen auf deinem Gerät.
 
-## Erster Test mit deinem vorbereiteten Bild
+## Einstellungen
 
-1. Für **Testbild (Firmware)** ist keine SD-Karte erforderlich.
-2. Unter Home Assistant → Einstellungen → Geräte & Dienste → ESPHome →
-   Maxim ePaper E1003 die Geräteeinstellungen öffnen.
-3. Die SD-Diagnosesensoren dürfen beim Firmware-Test AUS anzeigen.
-4. `Screensaver Bildquelle` auf **Testbild (Firmware)** lassen.
-5. `Screensaver Start nach` zum Test auf **1 Minute** stellen und `Screensaver`
-   einschalten. Den Bildwechsel z. B. auf **5 Minuten** stellen.
-6. Nicht mehr bedienen. Spätestens nach etwa 65 Sekunden erscheint das Bild.
-7. Ein Touch/Tastendruck beendet den Screensaver und zeigt die vorherige Seite.
-   Die erste Berührung wird nicht als Bedienbefehl auf der darunterliegenden UI gewertet.
-
-Standardmäßig wird `test_bild.bmp` beim Kompilieren eingebettet. Alternativ oben
-in `substitutions` ändern:
-
-```yaml
-screensaver_test_file: test_bild.png
-```
-
-Danach neu kompilieren/installieren. Es wird jeweils **ein** Testbild eingebettet,
-um den Firmware-Platzbedarf zu begrenzen. Der Testmodus liest dieses Bild aus
-der Firmware, weil dein ESPHome-Verzeichnis kein Dateisystem im Gerät ist.
-Der Firmware-Test funktioniert ohne SD-Karte; nur die Quelle SD-Karte benötigt eine lesbare Karte.
-
-## Einstellmöglichkeiten
+Unter Home Assistant → Einstellungen → Geräte & Dienste → ESPHome →
+Maxim ePaper E1003 stehen folgende Einstellungen bereit:
 
 | Feld | Werte | Standard |
 |---|---|---|
-| Screensaver | Ein/Aus; Firmware-Test ohne SD, SD-Quelle nur mit lesbarer Karte | Aus |
-| Screensaver Bildwechsel | 5–60 Minuten, in 5-Minuten-Schritten | 15 Minuten |
-| Screensaver Start nach | 1, 2, 5, 10, 15 … 60 Minuten ohne Bedienung | 5 Minuten |
-| Screensaver Bildquelle | Testbild (Firmware), SD-Karte | Testbild (Firmware) |
+| Screensaver | Ein/Aus | Aus |
+| Screensaver Darstellung | Bild / Digitale Uhr / Analoge Uhr | Bild |
+| Screensaver Start nach | 1, 2, 5, 10 … 60 Minuten | 5 Minuten |
+| Screensaver Bildwechsel | 5–60 Minuten | 15 Minuten |
 
-Die Auswahl bleibt über Neustart/Deep Sleep erhalten. Einschalten startet die
-Inaktivitätszeit neu. Touch und Tasten setzen sie zurück; HA-Datenupdates zählen
-nicht als Bedienung. Startzeitänderungen beziehen sich auf die letzte Bedienung;
-Bildwechseländerungen auf den letzten Bildwechsel. Ein Quellenwechsel verlässt
-zunächst den Screensaver. Bei einem Bildladefehler wird die Funktion ausgeschaltet
-und die normale Oberfläche wiederhergestellt; Details stehen im Log.
+Alle Einstellungen bleiben über Neustart und Deep Sleep erhalten. Startzeit,
+Aktivierung, Touch-/Tastenbedienung und USB-/Deep-Sleep-Regeln gelten für alle
+Darstellungen. Nur der Bildwechsel gilt ausschließlich für Bilder. Ein Wechsel
+der Darstellung beendet den laufenden Screensaver zunächst. Touch oder Taste zeigt
+die vorige Seite; die erste Berührung löst dort keinen Befehl aus.
 
-Bei Bildquelle SD-Karte wird ohne lesbare Karte der Schalter AUS angezeigt und Einschalten abgelehnt.
-Die Dropdowns bleiben sichtbar: ESPHome/HA unterstützen kein dynamisches Ausgrauen
-dieser Gerätefelder. Ihre Werte allein aktivieren den Screensaver nicht.
-Beim Entfernen der Karte endet der Screensaver nach spätestens ca. 5 Sekunden,
-sofern das Gerät wach und der Displaytransfer abgeschlossen ist. Im Deep Sleep
-wird eine Kartenentnahme erst beim nächsten Aufwachen erkannt. Die gespeicherte
-Einschaltpräferenz bleibt bei Kartenentnahme erhalten; erneutes Einsetzen kann
-den Screensaver wieder aktivieren. Der AUS-Schalter löscht diese Präferenz.
-Eine nicht lesbare Karte wird niemals automatisch formatiert.
+Beide Uhren zeigen große schwarze Ziffern bzw. ein großes Zifferblatt auf Weiß,
+Wochentag, Datum und die vorhandenen aktuellen HA-Wetterdaten.
+Die analoge Uhr hat Stunden- und Minutenzeiger, keinen Sekundenzeiger.
+Die Anzeige aktualisiert sich beim Wechsel der Uhrzeitminute (wach bis ca. 5 s
+Poll-Verzögerung plus Displaytransfer). Bei fehlender Zeit wird die Synchronisierung
+angezeigt; fehlende Wetterwerte werden nicht erfunden. Uhren benötigen keine SD-Karte.
+
+Bilder werden ausschließlich von SD geladen. Ohne lesbare Karte lässt sich der
+Bildmodus nicht einschalten. Eine Kartenentnahme beendet den Bildmodus beim
+nächsten wachen Poll; im Deep Sleep erst beim Aufwachen. Die Einschaltpräferenz
+bleibt erhalten. Bei Bildladefehlern wird der Screensaver ausgeschaltet. Karten
+werden niemals automatisch formatiert. Der Bildwechsel bleibt auch im Uhrmodus
+als Einstellung sichtbar, beeinflusst die Uhr aber nicht.
 
 ## Bilder von SD-Karte
 
@@ -82,7 +60,7 @@ Auf der Karte einen Ordner `screensaver` anlegen:
 /screensaver/familie.gray4
 ```
 
-Dann `Screensaver Bildquelle` auf **SD-Karte** stellen. Dateien werden zufällig
+Dann `Screensaver Darstellung` auf **Bild** stellen. Dateien werden zufällig
 ausgewählt; bei mehreren Bildern wird das letzte Bild nicht unmittelbar wiederholt.
 Es gibt keinen vollständigen Shuffle-Zyklus. Unterordner werden nicht durchsucht;
 maximal 1024 Dateien werden berücksichtigt.
@@ -107,7 +85,7 @@ letzte niedrige Nibble mit Weiß gefüllt. Gray4 muss die logische Panelgröße 
 
 Die aktuelle Displaykonfiguration verwendet **1872 × 1404 Pixel im Querformat**.
 Für vorbereitete OpenDithering-Bilder möglichst genau dieses Format verwenden.
-Passende Bilder werden pixelgenau übernommen. Andere BMP-/Testbildgrößen werden
+Passende Bilder werden pixelgenau übernommen. Andere BMP-Größen werden
 proportional eingepasst, mit weißen Rändern und Nearest-Neighbor-Skalierung.
 Das erhält vorhandene Pixelwerte, kann aber bei Größenänderungen Dithering-Muster
 verändern. Im Vorbereitungsskript ist mit `--fit cover` alternativ Zuschnitt möglich.
@@ -124,7 +102,7 @@ Die normale Oberfläche behält ihre bestehenden DU-Teilupdates.
 
 ## Deep Sleep / USB
 
-Wenn Screensaver EIN und SD lesbar sind, wartet der bisherige 90-Sekunden-Idle-Sleep
+Wenn Screensaver EIN und die gewählte Darstellung verfügbar ist, wartet der bisherige 90-Sekunden-Idle-Sleep
 auf den Screensaver; damit werden auch Startzeiten von 5–60 Minuten erreicht.
 Die Keep-Awake-Ausnahmen einzelner Seiten gelten dann für die normale UI weiterhin,
 verhindern aber nicht den späteren Screensaver-Sleep.
@@ -133,8 +111,9 @@ verhindern aber nicht den späteren Screensaver-Sleep.
 - USB-Signal EIN: Screensaver bleibt wach.
 - USB-Signal zuverlässig AUS und `Deep Sleep` EIN: nach dem Bildrefresh und
   dem vorhandenen Idle-Timeout schläft das Gerät bis zum nächsten Bildwechsel.
+  Bei Uhren wird stattdessen bis zur nächsten Uhrzeitminute geschlafen.
   SD wird vorher ausgehängt und ausgeschaltet. Timer-Wakeup lädt direkt das nächste
-  Foto; Touch/Geste oder Taste beendet den Screensaver.
+  Foto bzw. zeichnet die aktuelle Uhr; Touch/Geste oder Taste beendet den Screensaver.
 - USB-Signal unbekannt: Gerät bleibt im Screensaver wach. Aus der Batteriespannung
   lässt sich USB-Versorgung nicht zuverlässig ableiten.
 
@@ -162,6 +141,6 @@ Referenzen:
 - https://github.com/esphome/esphome/tree/2026.9.0/esphome/components/it8951
 - https://github.com/espressif/esp-idf/blob/v5.5.1/components/fatfs/vfs/esp_vfs_fat.h
 
-## Firmware-Test ohne SD-Karte
 
-Die Bildquelle „Testbild (Firmware)“ funktioniert auch ohne eingesetzte oder lesbare SD-Karte. Die Kartenprüfung gilt nur für „SD-Karte“. Die SD-Diagnosesensoren zeigen weiterhin den tatsächlichen Kartenstatus.
+Die neuen Uhrdarstellungen wurden auf YAML-/Python-Syntax und Auswahloptionen geprüft. Ein vollständiger ESPHome-Build und Hardwaretest stehen aus. Timerboot, Zeitsynchronisierung und GC16 verursachen im Deep Sleep zusätzliche Verzögerung bis zur sichtbaren Minute.
+

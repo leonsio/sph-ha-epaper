@@ -2,7 +2,6 @@
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
 #include "esphome/components/it8951/it8951.h"
-#include "esphome/components/image/image.h"
 #include "sdmmc_cmd.h"
 #include <string>
 #include <vector>
@@ -30,7 +29,6 @@ class DisplayAccess : public it8951::IT8951Display {
 class SDScreensaver : public Component {
  public:
   void set_display(it8951::IT8951Display *p) { display_=p; }
-  void set_test_image(image::Image *p) { test_=p; }
   float get_setup_priority() const override { return 500.0f; } // after SPI, before display
   void setup() override;
   void on_safe_shutdown() override;
@@ -44,7 +42,9 @@ class SDScreensaver : public Component {
   bool resume_requested() const { return resume_; }
   void activity();
   void stop();
-  bool next(bool firmware_test);
+  bool next();
+  bool next_clock(uint32_t minute);
+  uint32_t clock_minute() const { return clock_minute_; }
   void render();
   bool due(uint32_t idle_min, uint32_t interval_min) const;
   bool hourly_due() const;
@@ -59,11 +59,10 @@ class SDScreensaver : public Component {
   void scan_();
   bool load_bmp_(const std::string &path, uint8_t *out);
   bool load_gray4_(const std::string &path, uint8_t *out);
-  void load_test_(uint8_t *out);
   void set_pixel_(uint8_t *out,int x,int y,uint8_t gray);
   sdmmc_card_t *card_{nullptr};
   it8951::IT8951Display *display_{nullptr};
-  image::Image *test_{nullptr};
+  uint32_t clock_minute_{0};
   std::vector<std::string> files_;
   std::string filename_;
   uint8_t *pixels_{nullptr};
@@ -72,3 +71,4 @@ class SDScreensaver : public Component {
   int width_{0}, height_{0};
 };
 } // namespace
+

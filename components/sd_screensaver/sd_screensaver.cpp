@@ -103,18 +103,6 @@ void SDScreensaver::set_pixel_(uint8_t *out,int x,int y,uint8_t v){
   size_t i=size_t(y)*((width_+1)/2)+x/2;
   if(x&1)out[i]=(out[i]&0xf0)|v;else out[i]=(out[i]&0x0f)|(v<<4);
 }
-// Contain + nearest neighbour: no new dithering or smoothing of OpenDithering pixels.
-void SDScreensaver::load_test_(uint8_t *out){
-  double scale=std::min(double(width_)/test_->get_width(),double(height_)/test_->get_height());
-  int w=std::max(1,int(test_->get_width()*scale)),h=std::max(1,int(test_->get_height()*scale));
-  int ox=(width_-w)/2,oy=(height_-h)/2;
-  for(int y=0;y<h;y++){
-    for(int x=0;x<w;x++){
-      auto c=test_->get_pixel(std::min(test_->get_width()-1,int(x/scale)),std::min(test_->get_height()-1,int(y/scale)));
-      set_pixel_(out,x+ox,y+oy,gray4(c.r));
-    }App.feed_wdt();
-  }
-}
 bool SDScreensaver::load_bmp_(const std::string &path,uint8_t *out){
   FILE *f=fopen(path.c_str(),"rb");if(!f)return false;
   auto fail=[&](){fclose(f);return false;};
@@ -163,14 +151,13 @@ bool SDScreensaver::load_gray4_(const std::string &path,uint8_t *out){
     if(fread(out+p,1,chunk,f)!=chunk){ok=false;break;}App.feed_wdt();}}
   fclose(f);return ok;
 }
-bool SDScreensaver::next(bool firmware_test){
-  if((!firmware_test && !mounted_)||!display_idle())return false;
+bool SDScreensaver::next(){
+  if(!mounted_||!display_idle())return false;
   width_=display_->get_width();height_=display_->get_height();
   size_t n=size_t((width_+1)/2)*height_;RAMAllocator<uint8_t> allocator;
   uint8_t *candidate=allocator.allocate(n);if(!candidate){ESP_LOGE(TAG,"Kein RAM fuer Gray4-Bild");return false;}
   bool ok=false;std::string chosen;
-  if(firmware_test){memset(candidate,0xff,n);load_test_(candidate);chosen="Firmware-Testbild";ok=true;}
-  else {
+  {
     scan_();const std::string previous=resume_?std::string(retained.last_file):filename_;
     auto candidates=files_;
     if(candidates.size()>1)candidates.erase(std::remove(candidates.begin(),candidates.end(),previous),candidates.end());
@@ -190,6 +177,11 @@ bool SDScreensaver::next(bool firmware_test){
   pixels_=candidate;
   filename_=chosen;active_=true;resume_=false;last_change_=millis();
   ESP_LOGI(TAG,"Bild bereit: %s (%dx%d)",filename_.c_str(),width_,height_);return true;
+}
+bool SDScreensaver::next_clock(uint32_t minute){
+  if(!display_idle())return false;
+  active_=true;resume_=false;last_change_=millis();last_full_=millis();
+  clock_minute_=minute;filename_.clear();return true;
 }
 void SDScreensaver::render(){
   if(!active_||!pixels_)return;
@@ -211,3 +203,4 @@ void SDScreensaver::render(){
   last_full_=millis();
 }
 } // namespace
+
