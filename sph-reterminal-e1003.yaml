@@ -1,5 +1,5 @@
 # SD-Screensaver: BMP/Gray4, vorbereitete Bilder ohne erneutes Dithering.
-# Clock screensavers: minute changes use DU dirty-region updates; full GC16 only for initial/hourly/date refresh.
+# Clock screensavers: minute changes use GC16 dirty-region updates; full-panel GC16 only for initial/hourly/date refresh.
 # v4.2.28: Hausstatus ohne Einzelgeraete-Statuszeile mit Icons und groesserer Schrift, Einkauf abhaken per Touch,
 #           weiche monotone Temperaturkurve auf Wetterseite (GC16 / 16 Graustufen).
 # v4.2.25: Hausstatus statt Lichtliste + Einkaufsliste aus todo.einkaufsliste,
@@ -1812,7 +1812,7 @@ script:
               const bool hourly_clean=clock_now.is_valid() && clock_now.minute==0;
               id(screensaver_clock_partial)=!first_clock && clock_now.is_valid() && !hourly_clean;
               ESP_LOGI("sd_screensaver",id(screensaver_clock_partial) ?
-                       "Uhr: PARTIAL DU fuer geaenderte Ziffer/Zeiger" :
+                       "Uhr: PARTIAL GC16 fuer geaenderte Ziffer/Zeiger" :
                        "Uhr: FULL GC16 (Start oder stuendlicher Cleanup)");
             }else{
               id(screensaver_clock_partial)=false;
@@ -1839,9 +1839,11 @@ script:
       condition:
         lambda: return id(screensaver_clock_partial) && id(screensaver_source).current_option()!="Bild";
       then:
+      # GC16 still uses the IT8951 dirty rectangle here; only the changed digit/hand
+      # region is transferred, but black is driven with the stable grayscale waveform.
       - it8951.update:
           id: epaper
-          mode: DU
+          mode: GC16
       else:
       - it8951.update:
           id: epaper
@@ -1854,7 +1856,7 @@ script:
       id(screensaver_clock_partial)=false;
       id(refresh_busy)=false;
       id(initial_render_done)=true;
-      ESP_LOGI("sd_screensaver",partial ? "Uhr PARTIAL DU abgeschlossen" : "Screensaver GC16 abgeschlossen");
+      ESP_LOGI("sd_screensaver",partial ? "Uhr PARTIAL GC16 abgeschlossen" : "Screensaver GC16 abgeschlossen");
   - if:
       condition:
         not:
