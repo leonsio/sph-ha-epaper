@@ -54,14 +54,24 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           from PIL import Image
-          import re
+          import re, shutil, urllib.request
           text=Path('sph-reterminal-e1003.yaml').read_text(encoding='utf-8')
           for raw in re.findall(r'^\s*file:\s*([^#\n]+\.png)\s*$',text,re.M | re.I):
               p=Path(raw.strip().strip('"\''))
               if not p.exists():
                   p.parent.mkdir(parents=True,exist_ok=True)
                   Image.new('RGB',(64,64),'white').save(p)
-                  print(f'temporary asset: {p}')
+                  print(f'temporary image: {p}')
+          for raw in re.findall(r'^\s*(?:-\s*)?file:\s*([^#\n]+\.ttf)\s*$',text,re.M | re.I):
+              p=Path(raw.strip().strip('"\''))
+              if p.exists():
+                  continue
+              p.parent.mkdir(parents=True,exist_ok=True)
+              if 'MaterialDesignIcons' in p.name:
+                  urllib.request.urlretrieve('https://raw.githubusercontent.com/Templarian/MaterialDesign-Webfont/master/fonts/materialdesignicons-webfont.ttf', p)
+              else:
+                  shutil.copy('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', p)
+              print(f'temporary font: {p}')
           PY
 
       - name: Validate ESPHome configuration
@@ -76,7 +86,7 @@ jobs:
         shell: bash
         run: |
           rm -f secrets.yaml
-          git clean -fd icons/ || true
+          git clean -fd icons/ fonts/ || true
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git rm .github/workflows/finalize-clock-partial.yml \
