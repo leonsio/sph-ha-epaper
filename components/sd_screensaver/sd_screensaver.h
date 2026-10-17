@@ -9,7 +9,7 @@
 namespace esphome::sd_screensaver {
 // Retained only across deep sleep. Other resets deliberately restore the UI.
 bool sleeping_screensaver_input_wake();
-struct SleepState { uint32_t magic; bool active; char last_file[256]; };
+struct SleepState { uint32_t magic; bool active; bool clock_active; uint32_t clock_minute; char last_file[256]; };
 class DisplayAccess : public it8951::IT8951Display {
  public:
   using IT8951Display::phase_;
@@ -45,6 +45,7 @@ class SDScreensaver : public Component {
   bool next();
   bool next_clock(uint32_t minute);
   uint32_t clock_minute() const { return clock_minute_; }
+  uint32_t previous_clock_minute() const { return previous_clock_minute_; }
   void render();
   bool due(uint32_t idle_min, uint32_t interval_min) const;
   bool hourly_due() const;
@@ -62,11 +63,11 @@ class SDScreensaver : public Component {
   void set_pixel_(uint8_t *out,int x,int y,uint8_t gray);
   sdmmc_card_t *card_{nullptr};
   it8951::IT8951Display *display_{nullptr};
-  uint32_t clock_minute_{0};
+  uint32_t clock_minute_{0}, previous_clock_minute_{0};
   std::vector<std::string> files_;
   std::string filename_;
   uint8_t *pixels_{nullptr};
-  bool mounted_{false}, active_{false}, resume_{false};
+  bool mounted_{false}, active_{false}, resume_{false}, clock_active_{false};
   uint32_t last_activity_{0}, last_change_{0}, last_full_{0};
   int width_{0}, height_{0};
 };

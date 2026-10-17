@@ -30,7 +30,10 @@ void SDScreensaver::setup(){
   last_activity_=millis();
   const auto cause=esp_sleep_get_wakeup_cause();
   resume_=retained.magic==MAGIC && retained.active && cause==ESP_SLEEP_WAKEUP_TIMER;
-  if(!resume_)retained={MAGIC,false,{0}};
+  if(resume_){
+    clock_active_=retained.clock_active;
+    if(clock_active_)clock_minute_=retained.clock_minute;
+  }else retained={MAGIC,false,false,0,{0}};
   // Display CS must stay deasserted while the SD card enters SPI mode.
   gpio_set_direction(GPIO_NUM_10,GPIO_MODE_OUTPUT);gpio_set_level(GPIO_NUM_10,1);
   gpio_set_direction(GPIO_NUM_14,GPIO_MODE_OUTPUT);gpio_set_level(GPIO_NUM_14,1);
@@ -86,7 +89,7 @@ void SDScreensaver::scan_(){
 }
 void SDScreensaver::activity(){last_activity_=millis();stop();}
 void SDScreensaver::stop(){
-  active_=false;resume_=false;retained.active=false;
+  active_=false;resume_=false;clock_active_=false;retained.active=false;
   if(pixels_){RAMAllocator<uint8_t> a; a.deallocate(pixels_,size_t((width_+1)/2)*height_);pixels_=nullptr;}
 }
 bool SDScreensaver::due(uint32_t idle_min,uint32_t interval_min) const{
@@ -97,6 +100,7 @@ bool SDScreensaver::due(uint32_t idle_min,uint32_t interval_min) const{
 bool SDScreensaver::hourly_due() const{return active_&&uint32_t(millis()-last_full_)>=3600000UL;}
 void SDScreensaver::prepare_sleep(){
   retained.magic=MAGIC;retained.active=active_;
+  retained.clock_active=clock_active_;retained.clock_minute=clock_minute_;
   std::snprintf(retained.last_file,sizeof(retained.last_file),"%s",filename_.c_str());
 }
 void SDScreensaver::set_pixel_(uint8_t *out,int x,int y,uint8_t v){
@@ -175,12 +179,13 @@ bool SDScreensaver::next(){
     allocator.deallocate(pixels_,n);
   }
   pixels_=candidate;
-  filename_=chosen;active_=true;resume_=false;last_change_=millis();
+  filename_=chosen;active_=true;resume_=false;clock_active_=false;last_change_=millis();
   ESP_LOGI(TAG,"Bild bereit: %s (%dx%d)",filename_.c_str(),width_,height_);return true;
 }
 bool SDScreensaver::next_clock(uint32_t minute){
   if(!display_idle())return false;
-  active_=true;resume_=false;last_change_=millis();last_full_=millis();
+  previous_clock_minute_=clock_minute_;
+  active_=true;resume_=false;clock_active_=true;last_change_=millis();last_full_=millis();
   clock_minute_=minute;filename_.clear();return true;
 }
 void SDScreensaver::render(){
