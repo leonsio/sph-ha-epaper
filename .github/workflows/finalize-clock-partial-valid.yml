@@ -44,16 +44,29 @@ jobs:
           p.write_text(s[:a]+b+s[z:],encoding='utf-8')
           PY
 
-      - name: Validate ESPHome configuration
+      - name: Prepare validation environment
         shell: bash
         run: |
-          cat > secrets.yaml <<'EOF'
-          API: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
-          wifi_ssid: "compile-test"
-          wifi_password: "compile-test-password"
-          EOF
+          printf 'API: "' > secrets.yaml
+          openssl rand -base64 32 | tr -d '\n' >> secrets.yaml
+          printf '"\nwifi_ssid: "compile-test"\nwifi_password: "compile-test-password"\n' >> secrets.yaml
           python3 -m pip install --disable-pip-version-check --quiet "esphome==2026.9.0"
-          esphome config sph-reterminal-e1003.yaml
+          python3 - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          import re
+          text=Path('sph-reterminal-e1003.yaml').read_text(encoding='utf-8')
+          for raw in re.findall(r'^\s*file:\s*([^#\n]+\.png)\s*$',text,re.M | re.I):
+              p=Path(raw.strip().strip('"\''))
+              if not p.exists():
+                  p.parent.mkdir(parents=True,exist_ok=True)
+                  Image.new('RGB',(64,64),'white').save(p)
+                  print(f'temporary asset: {p}')
+          PY
+
+      - name: Validate ESPHome configuration
+        shell: bash
+        run: esphome config sph-reterminal-e1003.yaml
 
       - name: Compile firmware
         shell: bash
@@ -63,6 +76,7 @@ jobs:
         shell: bash
         run: |
           rm -f secrets.yaml
+          git clean -fd icons/ || true
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git rm .github/workflows/finalize-clock-partial.yml \
