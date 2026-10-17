@@ -1,0 +1,301 @@
+name: Apply screensaver partial refresh
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/apply-screensaver-partial.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch clock screensaver
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("sph-reterminal-e1003.yaml")
+          text = path.read_text(encoding="utf-8")
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected 1 occurrence, found {count}")
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              "# SD-Screensaver: BMP/Gray4, vorbereitete Bilder ohne erneutes Dithering.\n",
+              "# SD-Screensaver: BMP/Gray4, vorbereitete Bilder ohne erneutes Dithering.\n"
+              "# Clock screensavers: minute changes use DU dirty-region updates; full GC16 only for initial/hourly/date refresh.\n",
+              "header",
+          )
+
+          old_globals = '''- id: screensaver_waking
+            type: bool
+            restore_value: false
+            initial_value: 'false'
+          '''
+          new_globals = old_globals + '''- id: screensaver_clock_partial
+            type: bool
+            restore_value: false
+            initial_value: 'false'
+          - id: screensaver_clock_last_full_minute
+            type: int64_t
+            restore_value: false
+            initial_value: '-1'
+          - id: screensaver_clock_day_key
+            type: int
+            restore_value: false
+            initial_value: '-1'
+          '''
+          replace_once(old_globals, new_globals, "clock globals")
+
+          old_stop = '''        id(home_partial_refresh)=false;id(solar_partial_refresh)=false;
+                  id(start_partial_refresh)=false;id(maxim_partial_refresh)=false;id(elisa_partial_refresh)=false;
+          '''
+          new_stop = old_stop + '''        id(screensaver_clock_partial)=false;
+                  id(screensaver_clock_last_full_minute)=-1;
+                  id(screensaver_clock_day_key)=-1;
+          '''
+          replace_once(old_stop, new_stop, "screensaver stop reset")
+
+          start = text.index("- id: screensaver_tick\n")
+          end = text.index("- id: screensaver_show\n", start)
+          new_tick = '''- id: screensaver_tick
+            mode: single
+            then:
+            - if:
+                condition:
+                  lambda: return !id(refresh_busy) && id(sd_photos).display_idle();
+                then:
+                - lambda: |-
+                    id(sd_photos).poll_card();
+                    id(screensaver_switch).publish_state(id(screensaver_enabled) && (id(screensaver_source).current_option()!=\"Bild\" || id(sd_photos).ready()));
+                    id(screensaver_count).publish_state(id(sd_photos).count());
+                    if(!id(screensaver_enabled) || !(id(screensaver_source).current_option()!=\"Bild\" || id(sd_photos).ready())){
+                      if(id(sd_photos).active() || id(sd_photos).resume_requested())id(screensaver_stop).execute();
+                      return;
+                    }
+                    const uint32_t start=std::stoul(std::string(id(screensaver_start).current_option().c_str()));
+                    const bool clock=id(screensaver_source).current_option()!=\"Bild\";
+                    auto clock_now=id(ha_time).now();
+                    const uint32_t interval=clock?1:std::stoul(std::string(id(screensaver_interval).current_option().c_str()));
+                    const bool minute_changed=clock && id(sd_photos).active() && clock_now.is_valid() &&
+                        id(sd_photos).clock_minute()!=clock_now.timestamp/60;
+                    if(id(sd_photos).due(start,interval) || minute_changed){
+                      if(clock){
+                        const int64_t minute_key=clock_now.is_valid()?int64_t(clock_now.timestamp)/60:-1;
+                        const int day_key=clock_now.is_valid() ?
+                            clock_now.year*10000+clock_now.month*100+clock_now.day_of_month : -1;
+                        const bool first_clock=!id(sd_photos).active() || id(screensaver_clock_last_full_minute)<0;
+                        const bool time_jump=minute_key<0 || minute_key<id(screensaver_clock_last_full_minute);
+                        const bool hourly=minute_key>=0 && id(screensaver_clock_last_full_minute)>=0 &&
+                            minute_key-id(screensaver_clock_last_full_minute)>=60;
+                        const bool day_changed=id(screensaver_clock_day_key)>=0 && day_key>=0 &&
+                            day_key!=id(screensaver_clock_day_key);
+                        id(screensaver_clock_partial)=!first_clock && !time_jump && !hourly && !day_changed;
+                        if(!id(screensaver_clock_partial)){
+                          id(screensaver_clock_last_full_minute)=minute_key;
+                          id(screensaver_clock_day_key)=day_key;
+                          ESP_LOGI(\"sd_screensaver\",\"Uhr: FULL GC16 (Start/Stunden-/Datumsrefresh)\");
+                        }else{
+                          ESP_LOGD(\"sd_screensaver\",\"Uhr: PARTIAL DU fuer Minutenwechsel\");
+                        }
+                      }else{
+                        id(screensaver_clock_partial)=false;
+                        id(screensaver_clock_last_full_minute)=-1;
+                        id(screensaver_clock_day_key)=-1;
+                      }
+                      id(refresh_busy)=true;
+                      if(clock ? id(sd_photos).next_clock(clock_now.is_valid()?clock_now.timestamp/60:0) : id(sd_photos).next()){
+                        id(screensaver_filename).publish_state(id(sd_photos).filename());
+                        id(screensaver_count).publish_state(id(sd_photos).count());
+                        id(screensaver_show).execute();
+                      }else{
+                        // Do not spin/retry every five seconds after a bad image.
+                        id(screensaver_redraw)=id(sd_photos).active();
+                        id(sd_photos).activity();id(refresh_busy)=false;
+                        id(screensaver_switch).turn_off();
+                      }
+                    }else if(id(sd_photos).hourly_due()){
+                      id(screensaver_clock_partial)=false;
+                      id(refresh_busy)=true;id(screensaver_show).execute();
+                    }
+          '''
+          text = text[:start] + new_tick + text[end:]
+
+          start = text.index("- id: screensaver_show\n")
+          end = text.index("- id: navigation_visibility_store\n", start)
+          new_show = '''- id: screensaver_show
+            mode: single
+            then:
+            - if:
+                condition:
+                  lambda: return id(screensaver_clock_partial) && id(screensaver_source).current_option()!=\"Bild\";
+                then:
+                - it8951.update:
+                    id: epaper
+                    mode: DU
+                else:
+                - it8951.update:
+                    id: epaper
+                    mode: GC16
+            - wait_until:
+                condition:
+                  lambda: return id(sd_photos).display_idle();
+            - lambda: |-
+                const bool partial=id(screensaver_clock_partial);
+                id(screensaver_clock_partial)=false;
+                id(refresh_busy)=false;
+                id(initial_render_done)=true;
+                ESP_LOGI(\"sd_screensaver\",partial ? \"Uhr PARTIAL DU abgeschlossen\" : \"Screensaver GC16 abgeschlossen\");
+            - if:
+                condition:
+                  not:
+                    script.is_running: deep_sleep_idle
+                then:
+                - script.execute: deep_sleep_idle
+          '''
+          text = text[:start] + new_show + text[end:]
+
+          marker = "  lambda: |\n    if(id(sd_photos).active()){"
+          display_start = text.index(marker)
+          renderer_start = display_start + len("  lambda: |\n")
+          renderer_end = text.index("    // Native 1872 x 1404 renderer. No old page or centered 800 x 480 canvas.\n", renderer_start)
+          new_renderer = r'''    if(id(sd_photos).active()){
+              if(id(screensaver_source).current_option()=="Bild"){
+                id(sd_photos).render();
+                return;
+              }
+              const int W=it.get_width(), H=it.get_height();
+              const Color ink=Color::BLACK, paper=Color::WHITE;
+              auto now=id(ha_time).now();
+              const bool requested_partial=id(screensaver_clock_partial);
+              if(!now.is_valid()){
+                it.fill(paper);
+                it.print(W/2,H/2,id(font_weather_condition),ink,TextAlign::CENTER,"Uhrzeit wird synchronisiert");
+                return;
+              }
+              static const char *days[]={"", "Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"};
+              const bool analog=id(screensaver_source).current_option()=="Analoge Uhr";
+              static bool ss_layout_ready=false;
+              static bool ss_last_analog=false;
+              static int ss_prev_hour=-1, ss_prev_minute=-1;
+              static int ss_digit_x[4]={0,0,0,0};
+              static int ss_digit_y=0, ss_digit_w=0, ss_digit_h=0;
+
+              auto weather_text=[&]()->const char *{
+                const std::string condition=id(epaper_weather_condition).state;
+                if(condition=="sunny")return "Sonnig";
+                if(condition=="clear-night")return "Klare Nacht";
+                if(condition=="partlycloudy")return "Teilweise bewölkt";
+                if(condition=="cloudy")return "Bewölkt";
+                if(condition=="fog")return "Nebel";
+                if(condition=="rainy")return "Regen";
+                if(condition=="pouring")return "Starker Regen";
+                if(condition=="snowy")return "Schnee";
+                if(condition=="snowy-rainy")return "Schneeregen";
+                if(condition=="hail")return "Hagel";
+                if(condition=="lightning" || condition=="lightning-rainy")return "Gewitter";
+                if(condition=="windy" || condition=="windy-variant")return "Windig";
+                if(condition=="exceptional")return "Außergewöhnlich";
+                return "Wetter nicht verfügbar";
+              };
+              auto draw_footer=[&](){
+                it.printf(W/2,H-155,id(font_weather_condition),ink,TextAlign::CENTER,"%s, %02d.%02d.%04d",
+                          days[now.day_of_week],now.day_of_month,now.month,now.year);
+                const std::string raw=id(weather_outdoor_temperature).state;
+                char *end=nullptr;float temperature=strtof(raw.c_str(),&end);
+                if(end!=raw.c_str() && std::isfinite(temperature))
+                  it.printf(W/2,H-65,id(font_weather_condition),ink,TextAlign::CENTER,"%s · %.1f °C",weather_text(),temperature);
+                else it.printf(W/2,H-65,id(font_weather_condition),ink,TextAlign::CENTER,"%s · -- °C",weather_text());
+              };
+              auto analog_hand=[&](double tick,int length,int width,Color color){
+                const int cx=W/2, cy=(H-190)/2;
+                const double a=tick*3.141592653589793/30.0-3.141592653589793/2;
+                const int ex=cx+int(length*cos(a)),ey=cy+int(length*sin(a));
+                const int dx=int(width*sin(a)),dy=-int(width*cos(a));
+                it.filled_triangle(cx+dx,cy+dy,cx-dx,cy-dy,ex,ey,color);
+              };
+
+              const bool partial=requested_partial && ss_layout_ready && ss_last_analog==analog &&
+                  ss_prev_hour>=0 && ss_prev_minute>=0;
+              if(!partial){
+                it.fill(paper);
+                if(analog){
+                  const int cx=W/2, cy=(H-190)/2, r=std::min(W/2-30,cy-20);
+                  it.circle(cx,cy,r,ink);
+                  for(int m=0;m<60;m++){
+                    const double a=m*3.141592653589793/30.0-3.141592653589793/2;
+                    const int inner=r-(m%5==0?42:17);
+                    for(int offset=-1;offset<=1;offset++)
+                      it.line(cx+int(inner*cos(a))+offset,cy+int(inner*sin(a)),cx+int((r-8)*cos(a))+offset,cy+int((r-8)*sin(a)),ink);
+                    if(m%5==0)it.printf(cx+int((r-85)*cos(a)),cy+int((r-85)*sin(a)),id(font_start_weather),ink,TextAlign::CENTER,"%d",m==0?12:m/5);
+                  }
+                  analog_hand((now.hour%12)*5+now.minute/12.0,int(r*0.55),18,ink);
+                  analog_hand(now.minute,int(r*0.79),11,ink);
+                  it.filled_circle(cx,cy,24,ink);
+                }else{
+                  int bx=0,by=0,bw=0,bh=0;
+                  it.get_text_bounds(0,0,"88:88",id(font_screensaver_clock),TextAlign::TOP_LEFT,&bx,&by,&bw,&bh);
+                  const int slot=std::max(1,bw/5);
+                  const int cy=(H-190)/2;
+                  const int centers[5]={W/2-2*slot,W/2-slot,W/2,W/2+slot,W/2+2*slot};
+                  ss_digit_x[0]=centers[0];ss_digit_x[1]=centers[1];ss_digit_x[2]=centers[3];ss_digit_x[3]=centers[4];
+                  ss_digit_y=cy;ss_digit_w=slot+24;ss_digit_h=bh+34;
+                  char digits[5];snprintf(digits,sizeof(digits),"%02d%02d",now.hour,now.minute);
+                  for(int i=0;i<4;i++)it.printf(ss_digit_x[i],cy,id(font_screensaver_clock),ink,TextAlign::CENTER,"%c",digits[i]);
+                  it.print(centers[2],cy,id(font_screensaver_clock),ink,TextAlign::CENTER,":");
+                }
+                draw_footer();
+                ss_prev_hour=now.hour;ss_prev_minute=now.minute;
+                ss_last_analog=analog;ss_layout_ready=true;
+                return;
+              }
+
+              if(analog){
+                const int r=std::min(W/2-30,(H-190)/2-20);
+                // Erase only the previous hands. Their tips stay inside the static dial/tick ring.
+                analog_hand((ss_prev_hour%12)*5+ss_prev_minute/12.0,int(r*0.55),20,paper);
+                analog_hand(ss_prev_minute,int(r*0.79),13,paper);
+                analog_hand((now.hour%12)*5+now.minute/12.0,int(r*0.55),18,ink);
+                analog_hand(now.minute,int(r*0.79),11,ink);
+                it.filled_circle(W/2,(H-190)/2,24,ink);
+              }else{
+                char old_digits[5],new_digits[5];
+                snprintf(old_digits,sizeof(old_digits),"%02d%02d",ss_prev_hour,ss_prev_minute);
+                snprintf(new_digits,sizeof(new_digits),"%02d%02d",now.hour,now.minute);
+                for(int i=0;i<4;i++){
+                  if(old_digits[i]==new_digits[i])continue;
+                  it.filled_rectangle(ss_digit_x[i]-ss_digit_w/2,ss_digit_y-ss_digit_h/2,
+                                      ss_digit_w,ss_digit_h,paper);
+                  it.printf(ss_digit_x[i],ss_digit_y,id(font_screensaver_clock),ink,TextAlign::CENTER,"%c",new_digits[i]);
+                }
+              }
+              ss_prev_hour=now.hour;ss_prev_minute=now.minute;
+              return;
+            }
+          '''
+          text = text[:renderer_start] + new_renderer + text[renderer_end:]
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/apply-screensaver-partial.yml
+          git add sph-reterminal-e1003.yaml
+          git diff --cached --check
+          git diff --cached --stat
+          git commit -m "Optimize clock screensaver partial refresh"
+          git push origin HEAD:main
