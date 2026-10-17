@@ -1,0 +1,331 @@
+name: Finalize clock partial refresh
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/finalize-clock-partial.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch deep-sleep-safe partial clock updates
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected 1 occurrence, found {count}")
+              return text.replace(old, new, 1)
+
+          # --- Main ESPHome YAML -------------------------------------------------
+          p = Path("sph-reterminal-e1003.yaml")
+          text = p.read_text(encoding="utf-8")
+
+          text = replace_once(text, '''- id: screensaver_clock_partial
+            type: bool
+            restore_value: false
+            initial_value: 'false'
+          - id: screensaver_clock_last_full_minute
+            type: int64_t
+            restore_value: false
+            initial_value: '-1'
+          - id: screensaver_clock_day_key
+            type: int
+            restore_value: false
+            initial_value: '-1'
+          ''', '''- id: screensaver_clock_partial
+            type: bool
+            restore_value: false
+            initial_value: 'false'
+          ''', "remove transient clock-full globals")
+
+          text = replace_once(text, '''        id(start_partial_refresh)=false;id(maxim_partial_refresh)=false;id(elisa_partial_refresh)=false;
+                  id(screensaver_clock_partial)=false;
+                  id(screensaver_clock_last_full_minute)=-1;
+                  id(screensaver_clock_day_key)=-1;
+          ''', '''        id(start_partial_refresh)=false;id(maxim_partial_refresh)=false;id(elisa_partial_refresh)=false;
+                  id(screensaver_clock_partial)=false;
+          ''', "screensaver stop cleanup")
+
+          start = text.index("- id: screensaver_tick\n")
+          end = text.index("- id: screensaver_show\n", start)
+          new_tick = '''- id: screensaver_tick
+            mode: single
+            then:
+            - if:
+                condition:
+                  lambda: return !id(refresh_busy) && id(sd_photos).display_idle();
+                then:
+                - lambda: |-
+                    id(sd_photos).poll_card();
+                    id(screensaver_switch).publish_state(id(screensaver_enabled) && (id(screensaver_source).current_option()!=\"Bild\" || id(sd_photos).ready()));
+                    id(screensaver_count).publish_state(id(sd_photos).count());
+                    if(!id(screensaver_enabled) || !(id(screensaver_source).current_option()!=\"Bild\" || id(sd_photos).ready())){
+                      if(id(sd_photos).active() || id(sd_photos).resume_requested())id(screensaver_stop).execute();
+                      return;
+                    }
+                    const uint32_t start=std::stoul(std::string(id(screensaver_start).current_option().c_str()));
+                    const bool clock=id(screensaver_source).current_option()!=\"Bild\";
+                    auto clock_now=id(ha_time).now();
+                    const uint32_t interval=clock?1:std::stoul(std::string(id(screensaver_interval).current_option().c_str()));
+                    const bool resumed_clock=clock && id(sd_photos).resume_requested();
+                    const bool minute_changed=clock && id(sd_photos).active() && clock_now.is_valid() &&
+                        id(sd_photos).clock_minute()!=clock_now.timestamp/60;
+                    if(id(sd_photos).due(start,interval) || minute_changed){
+                      if(clock){
+                        // A timer wake retains the previously displayed clock minute in RTC memory.
+                        // That lets the first post-wake update stay partial instead of repainting the page.
+                        const bool first_clock=!id(sd_photos).active() && !resumed_clock;
+                        const bool hourly_clean=clock_now.is_valid() && clock_now.minute==0;
+                        id(screensaver_clock_partial)=!first_clock && clock_now.is_valid() && !hourly_clean;
+                        ESP_LOGI(\"sd_screensaver\",id(screensaver_clock_partial) ?
+                                 \"Uhr: PARTIAL DU fuer geaenderte Ziffer/Zeiger\" :
+                                 \"Uhr: FULL GC16 (Start oder stuendlicher Cleanup)\");
+                      }else{
+                        id(screensaver_clock_partial)=false;
+                      }
+                      id(refresh_busy)=true;
+                      if(clock ? id(sd_photos).next_clock(clock_now.is_valid()?clock_now.timestamp/60:0) : id(sd_photos).next()){
+                        id(screensaver_filename).publish_state(id(sd_photos).filename());
+                        id(screensaver_count).publish_state(id(sd_photos).count());
+                        id(screensaver_show).execute();
+                      }else{
+                        // Do not spin/retry every five seconds after a bad image.
+                        id(screensaver_redraw)=id(sd_photos).active();
+                        id(sd_photos).activity();id(refresh_busy)=false;
+                        id(screensaver_switch).turn_off();
+                      }
+                    }else if(id(sd_photos).hourly_due()){
+                      id(screensaver_clock_partial)=false;
+                      id(refresh_busy)=true;id(screensaver_show).execute();
+                    }
+          '''
+          text = text[:start] + new_tick + text[end:]
+
+          marker = "  lambda: |\n    if(id(sd_photos).active()){"
+          display_start = text.index(marker)
+          renderer_start = display_start + len("  lambda: |\n")
+          renderer_end = text.index("    // Native 1872 x 1404 renderer. No old page or centered 800 x 480 canvas.\n", renderer_start)
+          new_renderer = r'''    if(id(sd_photos).active()){
+              if(id(screensaver_source).current_option()=="Bild"){
+                id(sd_photos).render();
+                return;
+              }
+              const int W=it.get_width(), H=it.get_height();
+              const Color ink=Color::BLACK, paper=Color::WHITE;
+              auto now=id(ha_time).now();
+              if(!now.is_valid()){
+                it.fill(paper);
+                it.print(W/2,H/2,id(font_weather_condition),ink,TextAlign::CENTER,"Uhrzeit wird synchronisiert");
+                return;
+              }
+              const uint32_t previous_minute_key=id(sd_photos).previous_clock_minute();
+              const auto previous=esphome::ESPTime::from_epoch_local((time_t)previous_minute_key*60);
+              const bool partial=id(screensaver_clock_partial) && previous_minute_key>0 && previous.is_valid();
+              const bool analog=id(screensaver_source).current_option()=="Analoge Uhr";
+              static const char *days[]={"", "Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"};
+
+              auto weather_text=[&]()->const char *{
+                const std::string condition=id(epaper_weather_condition).state;
+                if(condition=="sunny")return "Sonnig";
+                if(condition=="clear-night")return "Klare Nacht";
+                if(condition=="partlycloudy")return "Teilweise bewölkt";
+                if(condition=="cloudy")return "Bewölkt";
+                if(condition=="fog")return "Nebel";
+                if(condition=="rainy")return "Regen";
+                if(condition=="pouring")return "Starker Regen";
+                if(condition=="snowy")return "Schnee";
+                if(condition=="snowy-rainy")return "Schneeregen";
+                if(condition=="hail")return "Hagel";
+                if(condition=="lightning" || condition=="lightning-rainy")return "Gewitter";
+                if(condition=="windy" || condition=="windy-variant")return "Windig";
+                if(condition=="exceptional")return "Außergewöhnlich";
+                return "Wetter nicht verfügbar";
+              };
+              auto draw_footer=[&](){
+                it.printf(W/2,H-155,id(font_weather_condition),ink,TextAlign::CENTER,"%s, %02d.%02d.%04d",
+                          days[now.day_of_week],now.day_of_month,now.month,now.year);
+                const std::string raw=id(weather_outdoor_temperature).state;
+                char *end=nullptr;float temperature=strtof(raw.c_str(),&end);
+                if(end!=raw.c_str() && std::isfinite(temperature))
+                  it.printf(W/2,H-65,id(font_weather_condition),ink,TextAlign::CENTER,"%s · %.1f °C",weather_text(),temperature);
+                else it.printf(W/2,H-65,id(font_weather_condition),ink,TextAlign::CENTER,"%s · -- °C",weather_text());
+              };
+              auto analog_hand=[&](int hour,int minute,int length,int width,bool minute_hand,Color color){
+                const int cx=W/2, cy=(H-190)/2;
+                const double tick=minute_hand ? double(minute) : (hour%12)*5+minute/12.0;
+                const double a=tick*3.141592653589793/30.0-3.141592653589793/2;
+                const int ex=cx+int(length*cos(a)),ey=cy+int(length*sin(a));
+                const int dx=int(width*sin(a)),dy=-int(width*cos(a));
+                it.filled_triangle(cx+dx,cy+dy,cx-dx,cy-dy,ex,ey,color);
+              };
+              auto digital_geometry=[&](int centers[5],int &cell_w,int &cell_h,int &cy){
+                int bx=0,by=0,bw=0,bh=0;
+                it.get_text_bounds(0,0,"88:88",id(font_screensaver_clock),TextAlign::TOP_LEFT,&bx,&by,&bw,&bh);
+                const int slot=std::max(1,bw/5);
+                cy=(H-190)/2;
+                centers[0]=W/2-2*slot;centers[1]=W/2-slot;centers[2]=W/2;
+                centers[3]=W/2+slot;centers[4]=W/2+2*slot;
+                cell_w=slot+24;cell_h=bh+34;
+              };
+
+              if(!partial){
+                it.fill(paper);
+                if(analog){
+                  const int cx=W/2, cy=(H-190)/2, r=std::min(W/2-30,cy-20);
+                  it.circle(cx,cy,r,ink);
+                  for(int m=0;m<60;m++){
+                    const double a=m*3.141592653589793/30.0-3.141592653589793/2;
+                    const int inner=r-(m%5==0?42:17);
+                    for(int offset=-1;offset<=1;offset++)
+                      it.line(cx+int(inner*cos(a))+offset,cy+int(inner*sin(a)),cx+int((r-8)*cos(a))+offset,cy+int((r-8)*sin(a)),ink);
+                    if(m%5==0)it.printf(cx+int((r-85)*cos(a)),cy+int((r-85)*sin(a)),id(font_start_weather),ink,TextAlign::CENTER,"%d",m==0?12:m/5);
+                  }
+                  analog_hand(now.hour,now.minute,int(r*0.55),18,false,ink);
+                  analog_hand(now.hour,now.minute,int(r*0.79),11,true,ink);
+                  it.filled_circle(cx,cy,24,ink);
+                }else{
+                  int centers[5],cell_w=0,cell_h=0,cy=0;
+                  digital_geometry(centers,cell_w,cell_h,cy);
+                  char digits[5];snprintf(digits,sizeof(digits),"%02d%02d",now.hour,now.minute);
+                  const int slots[4]={0,1,3,4};
+                  for(int i=0;i<4;i++)it.printf(centers[slots[i]],cy,id(font_screensaver_clock),ink,TextAlign::CENTER,"%c",digits[i]);
+                  it.print(centers[2],cy,id(font_screensaver_clock),ink,TextAlign::CENTER,":");
+                }
+                draw_footer();
+                return;
+              }
+
+              if(analog){
+                const int r=std::min(W/2-30,(H-190)/2-20);
+                // Only the old/new hand polygons become dirty; the dial, date and weather stay untouched.
+                analog_hand(previous.hour,previous.minute,int(r*0.55),20,false,paper);
+                analog_hand(previous.hour,previous.minute,int(r*0.79),13,true,paper);
+                analog_hand(now.hour,now.minute,int(r*0.55),18,false,ink);
+                analog_hand(now.hour,now.minute,int(r*0.79),11,true,ink);
+                it.filled_circle(W/2,(H-190)/2,24,ink);
+              }else{
+                int centers[5],cell_w=0,cell_h=0,cy=0;
+                digital_geometry(centers,cell_w,cell_h,cy);
+                char old_digits[5],new_digits[5];
+                snprintf(old_digits,sizeof(old_digits),"%02d%02d",previous.hour,previous.minute);
+                snprintf(new_digits,sizeof(new_digits),"%02d%02d",now.hour,now.minute);
+                const int slots[4]={0,1,3,4};
+                for(int i=0;i<4;i++){
+                  if(old_digits[i]==new_digits[i])continue;
+                  const int cx=centers[slots[i]];
+                  it.filled_rectangle(cx-cell_w/2,cy-cell_h/2,cell_w,cell_h,paper);
+                  it.printf(cx,cy,id(font_screensaver_clock),ink,TextAlign::CENTER,"%c",new_digits[i]);
+                }
+              }
+              return;
+            }
+          '''
+          text = text[:renderer_start] + new_renderer + text[renderer_end:]
+          p.write_text(text, encoding="utf-8")
+
+          # --- Custom SD screensaver component ----------------------------------
+          hp = Path("components/sd_screensaver/sd_screensaver.h")
+          h = hp.read_text(encoding="utf-8")
+          h = replace_once(h,
+              'struct SleepState { uint32_t magic; bool active; char last_file[256]; };',
+              'struct SleepState { uint32_t magic; bool active; bool clock_active; uint32_t clock_minute; char last_file[256]; };',
+              "retained sleep state")
+          h = replace_once(h,
+              '  uint32_t clock_minute() const { return clock_minute_; }\n',
+              '  uint32_t clock_minute() const { return clock_minute_; }\n  uint32_t previous_clock_minute() const { return previous_clock_minute_; }\n',
+              "previous minute getter")
+          h = replace_once(h,
+              '  uint32_t clock_minute_{0};\n',
+              '  uint32_t clock_minute_{0}, previous_clock_minute_{0};\n',
+              "clock minute fields")
+          h = replace_once(h,
+              '  bool mounted_{false}, active_{false}, resume_{false};\n',
+              '  bool mounted_{false}, active_{false}, resume_{false}, clock_active_{false};\n',
+              "clock mode field")
+          hp.write_text(h, encoding="utf-8")
+
+          cp = Path("components/sd_screensaver/sd_screensaver.cpp")
+          c = cp.read_text(encoding="utf-8")
+          c = replace_once(c, '''  resume_=retained.magic==MAGIC && retained.active && cause==ESP_SLEEP_WAKEUP_TIMER;
+            if(!resume_)retained={MAGIC,false,{0}};
+          ''', '''  resume_=retained.magic==MAGIC && retained.active && cause==ESP_SLEEP_WAKEUP_TIMER;
+            if(resume_){
+              clock_active_=retained.clock_active;
+              if(clock_active_)clock_minute_=retained.clock_minute;
+            }else retained={MAGIC,false,false,0,{0}};
+          ''', "setup retained clock")
+          c = replace_once(c, '''void SDScreensaver::stop(){
+            active_=false;resume_=false;retained.active=false;
+          ''', '''void SDScreensaver::stop(){
+            active_=false;resume_=false;clock_active_=false;retained.active=false;
+          ''', "stop clock mode")
+          c = replace_once(c, '''void SDScreensaver::prepare_sleep(){
+            retained.magic=MAGIC;retained.active=active_;
+            std::snprintf(retained.last_file,sizeof(retained.last_file),"%s",filename_.c_str());
+          }
+          ''', '''void SDScreensaver::prepare_sleep(){
+            retained.magic=MAGIC;retained.active=active_;
+            retained.clock_active=clock_active_;retained.clock_minute=clock_minute_;
+            std::snprintf(retained.last_file,sizeof(retained.last_file),"%s",filename_.c_str());
+          }
+          ''', "prepare sleep clock state")
+          c = replace_once(c, '''  filename_=chosen;active_=true;resume_=false;last_change_=millis();
+          ''', '''  filename_=chosen;active_=true;resume_=false;clock_active_=false;last_change_=millis();
+          ''', "image clears clock mode")
+          c = replace_once(c, '''bool SDScreensaver::next_clock(uint32_t minute){
+            if(!display_idle())return false;
+            active_=true;resume_=false;last_change_=millis();last_full_=millis();
+            clock_minute_=minute;filename_.clear();return true;
+          }
+          ''', '''bool SDScreensaver::next_clock(uint32_t minute){
+            if(!display_idle())return false;
+            previous_clock_minute_=clock_minute_;
+            active_=true;resume_=false;clock_active_=true;last_change_=millis();last_full_=millis();
+            clock_minute_=minute;filename_.clear();return true;
+          }
+          ''', "next clock keeps previous minute")
+          cp.write_text(c, encoding="utf-8")
+          PY
+
+      - name: Validate ESPHome configuration
+        shell: bash
+        run: |
+          cat > secrets.yaml <<'EOF'
+          API: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          wifi_ssid: "compile-test"
+          wifi_password: "compile-test-password"
+          EOF
+          python3 -m pip install --disable-pip-version-check --quiet "esphome==2026.9.0"
+          esphome config sph-reterminal-e1003.yaml >/tmp/esphome-config.txt
+          tail -n 30 /tmp/esphome-config.txt
+
+      - name: Compile firmware
+        shell: bash
+        run: |
+          esphome compile sph-reterminal-e1003.yaml
+
+      - name: Commit validated changes
+        shell: bash
+        run: |
+          rm -f secrets.yaml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/finalize-clock-partial.yml
+          git add sph-reterminal-e1003.yaml components/sd_screensaver/sd_screensaver.h components/sd_screensaver/sd_screensaver.cpp
+          git diff --cached --check
+          git diff --cached --stat
+          git commit -m "Keep clock screensaver partial updates across sleep"
+          git push origin HEAD:main
