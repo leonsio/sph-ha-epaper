@@ -226,6 +226,17 @@ text_sensor:
     then:
     - lambda: id(dirty_pages) |= (1U << 3) | (1U << 4);
 sensor:
+- platform: homeassistant
+  id: dishwasher_program_progress
+  entity_id: sensor.geschirrspuler_programm_fortschritt
+  internal: true
+  on_value:
+    then:
+    - lambda: |-
+        ESP_LOGD("appliance_progress", "Geschirrspüler Fortschritt: %.1f %%", x);
+        id(dirty_pages) |= 1U;
+        if(!id(sd_photos).active() && !id(sd_photos).resume_requested() && id(current_page)==0 &&
+           id(initial_render_done) && !id(refresh_busy))id(start_refresh).execute();
 - platform: template
   id: screensaver_count
   name: E1003 Screensaver Bilder

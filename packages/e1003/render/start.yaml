@@ -2,6 +2,14 @@
   if(id(current_page)==0){
     auto doc=esphome::json::parse_json(id(start_dashboard_json).state);
     const bool ready=!doc.isNull() && !doc.overflowed() && doc["version"].as<int>()==1;
+    // Merge the live sensor before computing the card signature.
+    if(ready && std::isfinite(id(dishwasher_program_progress).state)){
+      for(JsonObject device:doc["laundry"].as<JsonArray>()){
+        const std::string name=screensaver_ui::lower(device["name"] | "");
+        if(name.find("geschirr")!=std::string::npos || name.find("dishwasher")!=std::string::npos)
+          device["progress"]=id(dishwasher_program_progress).state;
+      }
+    }
     const int left=24, gap=24, col=(W-48-gap)/2, right=left+col+gap;
     static std::string start_cache[8];
     auto encoded=[](JsonVariant v){std::string s;serializeJson(v,s);return s;};
@@ -169,7 +177,8 @@
         text(x,324,fit(eta.empty()?"Ende: --":"ca. fertig "+eta,id(ui_body),appliance_w),id(ui_body),INK,appliance_w);
         if(!a["progress"].isNull()){
           const float p=std::max(0.0f,std::min(100.0f,a["progress"].as<float>()));
-          fast_rect(x,382,appliance_w,9,LIGHT);fast_rect(x,382,(int)(appliance_w*p/100.0f),9,DARK);
+          it.rectangle(x,380,appliance_w,13,INK);
+          fast_rect(x+1,381,(int)((appliance_w-2)*p/100.0f),11,INK);
         }i++;}
       if(!devices.size())text(right+22,244,"Keine WashData-Geräte erkannt",id(ui_body),INK,col-44);
       if(devices.size()>3)text(right+22,399,"+ "+std::to_string(devices.size()-3)+" weitere Geräte",id(ui_small),INK,col-44);

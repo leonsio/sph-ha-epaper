@@ -37,6 +37,10 @@ script:
             const float value=device["progress"].as<float>();
             if(std::isfinite(value))progress=std::max(0.0f,std::min(100.0f,value));
           }
+          const auto key=screensaver_ui::lower(name);
+          if((key.find("geschirr")!=std::string::npos || key.find("dishwasher")!=std::string::npos) &&
+             std::isfinite(id(dishwasher_program_progress).state))
+            progress=std::max(0.0f,std::min(100.0f,id(dishwasher_program_progress).state));
           plan.appliances.push_back({name,label,eta,progress});
           plan.devices.push_back(name+" · "+label+" · "+eta+" · "+std::to_string(progress));
         }
