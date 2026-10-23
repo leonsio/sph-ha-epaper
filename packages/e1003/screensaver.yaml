@@ -116,15 +116,15 @@ script:
 - id: screensaver_show
   mode: single
   then:
-  # Every new SD picture gets a physical cleaning cycle first.
+  # One fast white INIT refresh before the full GC16 picture transfer.
   # Clock minute updates retain their local update policy.
   - if:
       condition:
         lambda: return id(screensaver_source).current_option()=="Bild";
       then:
       - lambda: |-
-          ESP_LOGI("sd_screensaver","Bildwechsel: vollstaendige Panelreinigung vor dem Bild");
-          id(panel_refresh).clean();
+          ESP_LOGI("sd_screensaver","Bildwechsel: einmal schneller INIT-Refresh vor dem Bild");
+          id(panel_refresh).clean(true);
       - wait_until:
           condition:
             lambda: return id(panel_refresh).idle();
