@@ -5,6 +5,7 @@
 #include "driver/sdspi_host.h"
 #include "esp_vfs_fat.h"
 #include "esp_sleep.h"
+#include "esp_system.h"
 #include "esp_random.h"
 #include <algorithm>
 #include <cctype>
@@ -16,6 +17,7 @@
 namespace esphome::sd_screensaver {
 static constexpr const char *TAG="sd_screensaver";
 static constexpr uint32_t MAGIC=0xE1003A01;
+static constexpr uint32_t BOOT_CLEANUP_PAUSE_MS=1200UL;
 static RTC_DATA_ATTR SleepState retained;
 bool sleeping_screensaver_input_wake(){
   auto cause=esp_sleep_get_wakeup_cause();
@@ -25,21 +27,48 @@ bool sleeping_screensaver_input_wake(){
 static uint16_t le16(const uint8_t *p){return p[0]|uint16_t(p[1])<<8;}
 static uint32_t le32(const uint8_t *p){return le16(p)|uint32_t(le16(p+2))<<16;}
 static uint8_t gray4(uint8_t v){return std::min(15, (int(v)+8)>>4);}
+static const char *reset_reason_name(esp_reset_reason_t reason){
+  switch(reason){
+    case ESP_RST_POWERON:return "POWERON";
+    case ESP_RST_EXT:return "EXT";
+    case ESP_RST_SW:return "SW";
+    case ESP_RST_PANIC:return "PANIC";
+    case ESP_RST_INT_WDT:return "INT_WDT";
+    case ESP_RST_TASK_WDT:return "TASK_WDT";
+    case ESP_RST_WDT:return "WDT";
+    case ESP_RST_DEEPSLEEP:return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:return "BROWNOUT";
+    case ESP_RST_SDIO:return "SDIO";
+    default:return "UNKNOWN";
+  }
+}
 
 void SDScreensaver::setup(){
   last_activity_=millis();
   const auto cause=esp_sleep_get_wakeup_cause();
+  const auto reset_reason=esp_reset_reason();
   resume_=retained.magic==MAGIC && retained.active && cause==ESP_SLEEP_WAKEUP_TIMER;
   if(resume_){
     clock_active_=retained.clock_active;
     if(clock_active_)clock_minute_=retained.clock_minute;
   }else retained={MAGIC,false,false,0,{0}};
-  // A real reboot/power-on gets a three-step panel cleanup before the normal
-  // UI boot automation renders its page. Deep-sleep wakes deliberately skip it.
-  boot_cleanup_active_=cause==ESP_SLEEP_WAKEUP_UNDEFINED;
+
+  // Use the explicit reset reason instead of inferring a reboot from the wakeup
+  // cause. The physical E1003 power/restart switch can report POWERON or EXT,
+  // while OTA/software restarts report SW. Only genuine deep-sleep wakes skip
+  // the cleanup so battery wake cycles stay fast.
+  boot_cleanup_active_=reset_reason!=ESP_RST_DEEPSLEEP;
   boot_cleanup_stage_=0;
+  boot_cleanup_pause_pending_=false;
+  boot_cleanup_pause_until_=0;
+  ESP_LOGI(TAG,"Reset-Ursache: %s (%d), Wakeup-Ursache: %d",
+           reset_reason_name(reset_reason),(int)reset_reason,(int)cause);
   if(boot_cleanup_active_)
-    ESP_LOGI(TAG,"Boot-Cleanup vorgemerkt: WEISS -> SCHWARZ -> WEISS (GC16)");
+    ESP_LOGI(TAG,"Boot-Cleanup vorgemerkt: WEISS -> SCHWARZ -> WEISS -> SCHWARZ -> WEISS (GC16, %u ms Pause)",
+             (unsigned)BOOT_CLEANUP_PAUSE_MS);
+  else
+    ESP_LOGI(TAG,"Boot-Cleanup uebersprungen: Deep-Sleep-Wakeup");
+
   // Display CS must stay deasserted while the SD card enters SPI mode.
   gpio_set_direction(GPIO_NUM_10,GPIO_MODE_OUTPUT);gpio_set_level(GPIO_NUM_10,1);
   gpio_set_direction(GPIO_NUM_14,GPIO_MODE_OUTPUT);gpio_set_level(GPIO_NUM_14,1);
@@ -48,49 +77,71 @@ void SDScreensaver::setup(){
   if(gpio_get_level(GPIO_NUM_15)==0)mount_();
 }
 void SDScreensaver::loop(){
-  if(!boot_cleanup_active_ || !display_idle())return;
+  if(!boot_cleanup_active_ || !panel_idle_())return;
+
+  // Start the inter-stage pause only after the preceding physical GC16 update
+  // has actually completed. This makes the cleanup visibly slower without
+  // blocking the ESPHome scheduler or watchdog.
+  if(boot_cleanup_pause_pending_){
+    if(boot_cleanup_pause_until_==0){
+      boot_cleanup_pause_until_=millis()+BOOT_CLEANUP_PAUSE_MS;
+      return;
+    }
+    if((int32_t)(millis()-boot_cleanup_pause_until_)<0)return;
+    boot_cleanup_pause_pending_=false;
+    boot_cleanup_pause_until_=0;
+  }
+
   auto writer=&DisplayAccess::writer_;
+  auto paint=[&](Color color,const char *name,uint8_t step,uint8_t next){
+    display_->set_writer(display::display_writer_t([color](display::Display &it){it.fill(color);}));
+    ESP_LOGI(TAG,"Boot-Cleanup %u/5: %s",(unsigned)step,name);
+    display_->update_mode(it8951::UPDATE_MODE_GC16);
+    boot_cleanup_stage_=next;
+    boot_cleanup_pause_pending_=true;
+  };
+
   switch(boot_cleanup_stage_){
     case 0:
-      // The YAML boot sequence waits 12 s before the first normal render, so
-      // temporarily replace only the display writer while the panel is idle.
+      // Save the normal YAML writer only after the IT8951 display is initialized.
+      // Normal YAML updates see display_idle()==false until the cleanup is done.
       boot_writer_=display_->*writer;
-      display_->set_writer(display::display_writer_t([](display::Display &it){it.fill(Color::WHITE);}));
-      ESP_LOGI(TAG,"Boot-Cleanup 1/3: WEISS");
-      display_->update_mode(it8951::UPDATE_MODE_GC16);
-      boot_cleanup_stage_=1;
+      paint(Color::WHITE,"WEISS",1,1);
       return;
     case 1:
-      display_->set_writer(display::display_writer_t([](display::Display &it){it.fill(Color::BLACK);}));
-      ESP_LOGI(TAG,"Boot-Cleanup 2/3: SCHWARZ");
-      display_->update_mode(it8951::UPDATE_MODE_GC16);
-      boot_cleanup_stage_=2;
+      paint(Color::BLACK,"SCHWARZ",2,2);
       return;
     case 2:
-      display_->set_writer(display::display_writer_t([](display::Display &it){it.fill(Color::WHITE);}));
-      ESP_LOGI(TAG,"Boot-Cleanup 3/3: WEISS");
-      display_->update_mode(it8951::UPDATE_MODE_GC16);
-      boot_cleanup_stage_=3;
+      paint(Color::WHITE,"WEISS",3,3);
       return;
     case 3:
-      // Restore the original YAML renderer and run it immediately. The normal
-      // boot automation will still perform its delayed refresh, but this makes
-      // the transition from the final white cleanup to the UI deterministic.
+      paint(Color::BLACK,"SCHWARZ",4,4);
+      return;
+    case 4:
+      paint(Color::WHITE,"WEISS",5,5);
+      return;
+    case 5:
+      // Restore the original renderer and paint the actual UI immediately.
       display_->set_writer(display::display_writer_t(boot_writer_));
       ESP_LOGI(TAG,"Boot-Cleanup: normaler Renderer wiederhergestellt");
       display_->update_mode(it8951::UPDATE_MODE_GC16);
-      boot_cleanup_stage_=4;
+      boot_cleanup_stage_=6;
       return;
     default:
       boot_cleanup_active_=false;
-      ESP_LOGI(TAG,"Boot-Cleanup abgeschlossen");
+      ESP_LOGI(TAG,"Boot-Cleanup abgeschlossen; normale Displayupdates wieder freigegeben");
       return;
   }
 }
-bool SDScreensaver::display_idle() const {
+bool SDScreensaver::panel_idle_() const {
   if(!display_ || display_->is_failed())return false;
   auto p=&DisplayAccess::phase_;auto i=&DisplayAccess::initialised_;auto u=&DisplayAccess::update_pending_;
   return display_->*i && display_->*p==it8951::Phase::IDLE && !(display_->*u);
+}
+bool SDScreensaver::display_idle() const {
+  // Keep every YAML/screensaver update out of the way until the boot cleanup
+  // owns the display no longer. loop() uses panel_idle_() directly.
+  return !boot_cleanup_active_ && panel_idle_();
 }
 bool SDScreensaver::mount_(){
   gpio_set_level(GPIO_NUM_39,1);delay(200);
