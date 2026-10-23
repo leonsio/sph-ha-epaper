@@ -42,6 +42,7 @@ class SDScreensaver : public Component {
   const std::string &filename() const { return filename_; }
   bool active() const { return active_; }
   bool resume_requested() const { return resume_; }
+  bool boot_cleanup_active() const { return boot_cleanup_active_; }
   void activity();
   void stop();
   bool next();
@@ -49,7 +50,7 @@ class SDScreensaver : public Component {
   uint32_t clock_minute() const { return clock_minute_; }
   uint32_t previous_clock_minute() const { return previous_clock_minute_; }
   void render();
-  bool due(uint32_t idle_min, uint32_t interval_min) const;
+  bool due(uint32_t idle_min,uint32_t interval_min) const;
   bool hourly_due() const;
   void prepare_sleep();
   uint32_t remaining_ms(uint32_t minutes) const {
@@ -57,6 +58,7 @@ class SDScreensaver : public Component {
     return elapsed>=minutes*60000UL?1000UL:minutes*60000UL-elapsed;
   }
  private:
+  bool panel_idle_() const;
   bool mount_();
   void unmount_();
   void scan_();
@@ -74,6 +76,8 @@ class SDScreensaver : public Component {
   int width_{0}, height_{0};
   display::display_writer_t boot_writer_{};
   bool boot_cleanup_active_{false};
+  bool boot_cleanup_pause_pending_{false};
   uint8_t boot_cleanup_stage_{0};
+  uint32_t boot_cleanup_pause_until_{0};
 };
 } // namespace
