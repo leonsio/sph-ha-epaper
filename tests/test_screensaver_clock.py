@@ -36,9 +36,12 @@ struct {std::string state="14.0";} weather_outdoor_temperature;
 bool screensaver_clock_full=true;
 int screensaver_clock_part=0;
 int font_screensaver_clock=1,font_weather_condition=2,font_start_weather=3,font_small=4,ui_small=5,mdi_start_appliance=6;
+int waste_rest_value=1,waste_bio_value=2,waste_papier_value=3,waste_gelb_value=4,waste_gruen_value=5;
+auto *waste_rest=&waste_rest_value,*waste_bio=&waste_bio_value,*waste_papier=&waste_papier_value,*waste_gelb=&waste_gelb_value,*waste_gruen=&waste_gruen_value;
 struct Display {
   int xlow=1872,ylow=1404,xhigh=0,yhigh=0;
   std::vector<int> appliance_centers;
+  std::vector<int> waste_centers, waste_icons;
   int fills=0,circles=0,lines=0,hubs=0,triangles=0,prints=0,digits=0,clears=0;
   int get_width()const{return 1872;} int get_height()const{return 1404;}
   void rect(int x,int y,int w,int h){xlow=std::min(xlow,x);ylow=std::min(ylow,y);xhigh=std::max(xhigh,x+w);yhigh=std::max(yhigh,y+h);}
@@ -52,6 +55,7 @@ struct Display {
   }
   void rectangle(int x,int y,int w,int h,Color){rect(x,y,w,h);}
   void filled_rectangle(int x,int y,int w,int h,Color){rect(x,y,w,h);}
+  void image(int x,int y,int *icon,Color){waste_centers.push_back(x+32);waste_icons.push_back(*icon);rect(x,y,64,70);}
   void circle(int,int,int,Color){++circles;}
   void line(int,int,int,int,Color){++lines;}
   void filled_circle(int,int,int,Color){++hubs;}
@@ -63,7 +67,7 @@ struct Display {
     *bx=x-(align!=TextAlign::TOP_LEFT?*w/2:0);
     *by=y-(align==TextAlign::CENTER?*h/2:0);
   }
-  void reset(){appliance_centers.clear();fills=circles=lines=hubs=triangles=prints=digits=clears=0;xlow=1872;ylow=1404;xhigh=yhigh=0;}
+  void reset(){appliance_centers.clear();waste_centers.clear();waste_icons.clear();fills=circles=lines=hubs=triangles=prints=digits=clears=0;xlow=1872;ylow=1404;xhigh=yhigh=0;}
 } it;
 Display *epaper=&it;
 namespace esphome::it8951_native {
@@ -89,7 +93,9 @@ int main(){
   assert(it.xhigh-it.xlow<=324 && it.ylow>240 && it.yhigh<1200);
   // Footer and hints are separate transmissions, never joined to this digit.
   p.waste={"Bioabfall","Papiertonne"};it.reset();screensaver_clock_part=8;render();
-  assert(it.digits==0 && it.prints==3 && it.xhigh<936 && it.yhigh<=220);
+  assert(it.digits==0 && it.prints==6 && it.xhigh<936 && it.yhigh<=220);
+  assert((it.waste_centers==std::vector<int>{164,444}));
+  assert((it.waste_icons==std::vector<int>{2,3}));
   p.appliances={{"Geschirrspüler","Ein","22:52",40}};
   it.reset();screensaver_clock_part=9;render();
   assert(it.prints==4 && it.yhigh<=220);

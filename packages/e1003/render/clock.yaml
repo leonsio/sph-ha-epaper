@@ -136,27 +136,38 @@
     }
     if(full || part==6){footer_row(H-155,date_text,painted_date);painted_date=date_text;}
     if(full || part==7){footer_row(H-65,weather_text_line,painted_weather);painted_weather=weather_text_line;}
-    auto hints=[&](int x,const char *title,const std::vector<std::string> &rows){
-      const int width=(W-72)/2, height=CLOCK_TOP-40;
-      if(!full)esphome::it8951_native::fill_gray4_rect(id(epaper),x,20,width,height,paper);
-      if(rows.empty())return;
-      it.print(x,22,id(font_small),ink,TextAlign::TOP_LEFT,title);
-      // Use two columns for many simultaneous bins; no fixed first-item limit.
-      const int columns=std::max(1,int((rows.size()+4)/5)),column_w=width/columns;
-      for(size_t i=0;i<rows.size();++i){
-        std::string label=rows[i];
-        int bx=0,by=0,bw=0,bh=0;
-        while(!label.empty()){
-          it.get_text_bounds(0,0,label.c_str(),id(ui_small),TextAlign::TOP_LEFT,&bx,&by,&bw,&bh);
-          if(bw<=column_w-12)break;
-          size_t p=label.size()-1;
-          while(p>0 && (static_cast<unsigned char>(label[p])&0xC0)==0x80)--p;
-          label.resize(p);
+    if(full || part==8){
+      const int width=(W-72)/2;
+      if(!full)esphome::it8951_native::fill_gray4_rect(id(epaper),24,20,width,CLOCK_TOP-40,paper);
+      const int count=plan.waste.size();
+      if(count){
+        const int cell=std::min(280,width/count);
+        for(int i=0;i<count;++i){
+          const int cx=24+i*cell+cell/2;
+          const auto key=screensaver_ui::lower(plan.waste[i]);
+          auto *icon=id(waste_rest);
+          if(key.find("gelb")!=std::string::npos || key.find("wertstoff")!=std::string::npos)icon=id(waste_gelb);
+          else if(key.find("grün")!=std::string::npos || key.find("gruen")!=std::string::npos ||
+                  key.find("garten")!=std::string::npos)icon=id(waste_gruen);
+          else if(key.find("bio")!=std::string::npos)icon=id(waste_bio);
+          else if(key.find("papier")!=std::string::npos || key.find("pappe")!=std::string::npos ||
+                  key.find("blaue tonne")!=std::string::npos)icon=id(waste_papier);
+          it.image(cx-32,20,icon,ink);
+          auto label=plan.waste[i];
+          int bx=0,by=0,bw=0,bh=0;
+          while(!label.empty()){
+            it.get_text_bounds(0,0,label.c_str(),id(ui_small),TextAlign::TOP_LEFT,&bx,&by,&bw,&bh);
+            if(bw<=cell-12)break;
+            size_t p=label.size()-1;
+            while(p>0 && (static_cast<unsigned char>(label[p])&0xC0)==0x80)--p;
+            label.resize(p);
+          }
+          it.print(cx,92,id(ui_small),ink,TextAlign::TOP_CENTER,label.c_str());
+          it.print(cx,124,id(ui_small),ink,TextAlign::TOP_CENTER,"Morgen");
+          it.print(cx,156,id(ui_small),ink,TextAlign::TOP_CENTER,plan.waste_date.c_str());
         }
-        it.print(x+int(i/5)*column_w,64+int(i%5)*30,id(ui_small),ink,TextAlign::TOP_LEFT,label.c_str());
       }
-    };
-    if(full || part==8)hints(24,"Morgen Müllabfuhr",plan.waste);
+    }
     if(full || part==9){
       const int x=W/2+12, width=(W-72)/2;
       if(!full)esphome::it8951_native::fill_gray4_rect(id(epaper),x,20,width,CLOCK_TOP-40,paper);

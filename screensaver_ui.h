@@ -53,7 +53,7 @@ struct Plan {
   std::array<std::string,9> desired{},painted{};
   std::vector<std::string> waste,devices;
   std::vector<Device> appliances;
-  std::string condition,temperature;
+  std::string condition,temperature,waste_date;
   int64_t epoch{0};
   uint16_t pending{0};
   void prepare(bool full) {

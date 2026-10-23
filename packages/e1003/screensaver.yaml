@@ -15,11 +15,12 @@ script:
       plan.condition=id(epaper_weather_condition).state;
       plan.temperature=id(weather_outdoor_temperature).state;
       plan.desired[6]=plan.condition+"|"+plan.temperature;
-      plan.waste.clear();plan.devices.clear();plan.appliances.clear();
+      plan.waste_date.clear();plan.waste.clear();plan.devices.clear();plan.appliances.clear();
       auto doc=esphome::json::parse_json(id(start_dashboard_json).state);
       const int64_t stamp=doc["timestamp"].as<int64_t>();
       if(!doc.isNull() && !doc.overflowed() && doc["version"].as<int>()==1 && screensaver_ui::fresh(now.timestamp,stamp)){
         const auto tomorrow=screensaver_ui::tomorrow(now.year,now.month,now.day_of_month);
+        plan.waste_date=tomorrow.substr(8,2)+"."+tomorrow.substr(5,2)+"."+tomorrow.substr(0,4);
         auto source_time=esphome::ESPTime::from_epoch_local(stamp);
         const bool same_day=source_time.strftime("%Y-%m-%d")==now.strftime("%Y-%m-%d");
         for(JsonObject bin:doc["waste"].as<JsonArray>()){
@@ -49,7 +50,7 @@ script:
         std::sort(rows->begin(),rows->end());
         rows->erase(std::unique(rows->begin(),rows->end()),rows->end());
       }
-      plan.desired[7]=screensaver_ui::signature(plan.waste);
+      plan.desired[7]=screensaver_ui::signature(plan.waste)+(plan.waste.empty()?"":plan.waste_date);
       plan.desired[8]=screensaver_ui::signature(plan.devices);
       plan.prepare(id(screensaver_clock_full));
 - id: screensaver_activity
