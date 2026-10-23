@@ -74,16 +74,21 @@ bool SDScreensaver::poll_card(){
   return mounted_;
 }
 void SDScreensaver::scan_(){
-  files_.clear();DIR *dir=opendir("/sdcard/screensaver");if(!dir)return;
+  files_.clear();
+  // Accept images in the card root as well as the existing optional folder.
+  for(const char *base : {"/sdcard", "/sdcard/screensaver"}){
+  DIR *dir=opendir(base);if(!dir)continue;
   while(auto *e=readdir(dir)){
     std::string name=e->d_name;if(name.empty()||name[0]=='.')continue;
     auto dot=name.find_last_of('.');if(dot==std::string::npos)continue;
     std::string ext=name.substr(dot);for(auto &c:ext)c=std::tolower(static_cast<unsigned char>(c));
     if(ext!=".bmp"&&ext!=".gray4")continue;
-    std::string path="/sdcard/screensaver/"+name;struct stat st;
+    std::string path=std::string(base)+"/"+name;struct stat st;
     if(path.size()<sizeof(retained.last_file)&&stat(path.c_str(),&st)==0&&S_ISREG(st.st_mode))files_.push_back(path);
     if(files_.size()>=1024)break;
   }closedir(dir);
+  if(files_.size()>=1024)break;
+  }
 }
 void SDScreensaver::activity(){
   last_activity_=millis();
