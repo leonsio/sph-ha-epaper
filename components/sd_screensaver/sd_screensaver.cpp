@@ -206,6 +206,8 @@ struct PngTarget {
   int width, height, iw{0}, ih{0}, dw{0}, dh{0}, ox{0}, oy{0};
   bool valid{false}, done{false};
   uint32_t pixels{0};
+  uint8_t *row{nullptr};
+  bool packed_row{false};
 };
 static void png_init(pngle_t *png,uint32_t w,uint32_t h){
   auto &t=*static_cast<PngTarget *>(pngle_get_user_data(png));
@@ -214,10 +216,31 @@ static void png_init(pngle_t *png,uint32_t w,uint32_t h){
   double scale=std::min(double(t.width)/w,double(t.height)/h);
   t.dw=std::max(1,int(w*scale));t.dh=std::max(1,int(h*scale));
   t.ox=(t.width-t.dw)/2;t.oy=(t.height-t.dh)/2;t.valid=true;
+  t.packed_row=t.row && int(w)==t.width && int(h)==t.height &&
+      pngle_get_ihdr(png)->interlace==0;
 }
 static void png_draw(pngle_t *png,uint32_t x,uint32_t y,uint32_t w,uint32_t h,const uint8_t rgba[4]){
   auto &t=*static_cast<PngTarget *>(pngle_get_user_data(png));
   if(!t.valid)return;
+  // Opaque grayscale is the common OpenDithering case.
+  uint8_t v;
+  if(rgba[3]==255){
+    v=gray4(rgba[0]==rgba[1]&&rgba[1]==rgba[2]?rgba[0]:
+        uint8_t((77U*rgba[0]+150U*rgba[1]+29U*rgba[2]+128)>>8));
+  }else{
+    unsigned luminance=(77U*rgba[0]+150U*rgba[1]+29U*rgba[2]+128)>>8;
+    v=gray4((luminance*rgba[3]+255U*(255-rgba[3])+127)/255);
+  }
+  // Pack a scanline in internal RAM, then write it to PSRAM once.
+  if(t.packed_row&&w==1&&h==1){
+    if(x&1)t.row[x/2]=uint8_t((t.row[x/2]&0xf0)|v);
+    else t.row[x/2]=uint8_t((v<<4)|15);
+    if(x+1==uint32_t(t.width)){
+      memcpy(t.out+size_t(y)*((t.width+1)/2),t.row,(t.width+1)/2);
+      App.feed_wdt();
+    }
+    return;
+  }
   // Nearest-neighbour scaling, including PNGLE's interlaced rectangles.
   int x0,x1,y0,y1;
   if(t.dw==t.iw&&t.dh==t.ih){
@@ -228,9 +251,6 @@ static void png_draw(pngle_t *png,uint32_t x,uint32_t y,uint32_t w,uint32_t h,co
     y0=(uint64_t(y)*t.dh+t.ih-1)/t.ih;
     y1=std::min(uint64_t(t.dh),((uint64_t(y)+h)*t.dh+t.ih-1)/t.ih);
   }
-  // Composite transparency on the white e-paper background.
-  unsigned luminance=(77U*rgba[0]+150U*rgba[1]+29U*rgba[2]+128)>>8;
-  uint8_t v=gray4((luminance*rgba[3]+255U*(255-rgba[3])+127)/255);
   for(int dy=y0;dy<y1;dy++)for(int dx=x0;dx<x1;dx++){
     int px=dx+t.ox;size_t i=size_t(dy+t.oy)*((t.width+1)/2)+px/2;
     t.out[i]=(px&1)?((t.out[i]&0xf0)|v):((t.out[i]&0x0f)|(v<<4));
@@ -250,11 +270,13 @@ bool SDScreensaver::load_png_(const std::string &path,uint8_t *out){
   bool engine_internal=engine!=nullptr;
   if(!engine)engine=allocator.allocate(PNGLE_T_SIZE);
   uint8_t *input=allocator.allocate(CHUNK),*io=allocator.allocate(CHUNK);
+  uint8_t *row=internal.allocate((width_+1)/2); // optional fast path
   auto close=[&](){
     fclose(f); // stdio must release its buffer before it is deallocated
     if(io)allocator.deallocate(io,CHUNK);
     if(input)allocator.deallocate(input,CHUNK);
     if(engine)allocator.deallocate(engine,PNGLE_T_SIZE);
+    if(row)internal.deallocate(row,(width_+1)/2);
   };
   if(!engine||!input||!io){
     close();ESP_LOGW(TAG,"Kein RAM fuer PNG-Decoder");return false;
@@ -275,6 +297,7 @@ bool SDScreensaver::load_png_(const std::string &path,uint8_t *out){
   auto *png=reinterpret_cast<pngle_t *>(engine);
   pngle_reset(png);
   PngTarget target{out,width_,height_};
+  target.row=row;
   pngle_set_user_data(png,&target);
   pngle_set_init_callback(png,png_init);
   pngle_set_draw_callback(png,png_draw);
@@ -304,9 +327,9 @@ bool SDScreensaver::load_png_(const std::string &path,uint8_t *out){
     if(pending)memmove(input,input+consumed,pending);
   }
   ok=ok&&target.valid&&target.done;
-  ESP_LOGI(TAG,"PNG-Profil: %u Bytes; SD-Lesen=%u ms; Decodieren/Zeichnen=%u ms; Decoder=%s (%u Bytes)",
+  ESP_LOGI(TAG,"PNG-Profil: %u Bytes; SD-Lesen=%u ms; Decodieren/Zeichnen=%u ms; Decoder=%s (%u Bytes); Zeilenpuffer=%s",
            unsigned(total_read),unsigned(read_us/1000),unsigned(decode_us/1000),
-           engine_internal?"intern":"PSRAM",unsigned(PNGLE_T_SIZE));
+           engine_internal?"intern":"PSRAM",unsigned(PNGLE_T_SIZE),target.packed_row?"intern":"aus");
   if(!ok)ESP_LOGW(TAG,"PNG unvollstaendig oder nicht unterstuetzt: %s",path.c_str());
   pngle_reset(png); // frees the decoder's dynamically allocated scanline buffers
   close();return ok;
@@ -380,4 +403,5 @@ void SDScreensaver::render(){
   last_full_=millis();
 }
 } // namespace
+
 
