@@ -19,6 +19,10 @@ template:
         entity_id: sensor.e1003_aktive_seite
         to: '0'
       - trigger: state
+        entity_id: sensor.geschirrspuler_betriebszustand
+      - trigger: state
+        entity_id: sensor.geschirrspuler_programm_endzeit
+      - trigger: state
         entity_id: todo.einkaufsliste
     actions:
       - variables:
@@ -178,6 +182,8 @@ template:
               {% endif %}
             {% endfor %}
 
+            {% set previous_raw = this.attributes.get('payload', '{}') %}
+            {% set previous = previous_raw | from_json({}) if previous_raw is string else previous_raw %}
             {% set laundry = namespace(config=appliances, items=[]) %}
             {% if not appliances %}
               {% for e in wash_ids | select('match','^sensor[.]') | reject('in', excluded) %}
@@ -228,8 +234,26 @@ template:
                   {% endif %}
                 {% endfor %}
               {% endif %}
+              {# Keep the observed program start across intermediate running states and ETA changes. #}
+              {% set active_states = ['running','run','starting','ending','rinse','läuft','ein','startet','wird fertig','spülen'] %}
+              {% set timing = namespace(start=none) %}
+              {% if final_state | lower in active_states %}
+                {% for old in previous.get('laundry', []) if old.get('name') == a.name %}
+                  {% if old.get('raw_state','') | lower in active_states %}
+                    {% set timing.start = old.get('start_ts') | float(none) %}
+                  {% endif %}
+                {% endfor %}
+                {% if timing.start is none %}
+                  {% set timing.start = as_timestamp(states[a.state].last_changed, none) if states[a.state] is defined else none %}
+                {% endif %}
+                {% set end_ts = as_timestamp(direct_dt, none) if direct_dt else none %}
+                {% if progress.value is none and timing.start is not none and end_ts is not none and end_ts > timing.start %}
+                  {% set elapsed = 100 * (as_timestamp(now()) - timing.start) / (end_ts - timing.start) %}
+                  {% set progress.value = ([0, ([elapsed, 100] | min)] | max) | round(1) %}
+                {% endif %}
+              {% endif %}
               {% set laundry.items = laundry.items + [dict(name=a.name, state=labels.get(final_state,final_state), raw_state=final_state,
-                eta=final_eta, progress=progress.value,
+                eta=final_eta, progress=progress.value, start_ts=timing.start,
                 program=state_attr(a.state,'current_program_guess'))] %}
             {% endfor %}
 
