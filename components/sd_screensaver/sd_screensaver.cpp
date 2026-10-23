@@ -72,12 +72,18 @@ void SDScreensaver::loop(){
       display_->update_mode(it8951::UPDATE_MODE_GC16);
       boot_cleanup_stage_=3;
       return;
-    default:
-      // Restore the original YAML renderer. The existing delayed boot refresh
-      // then paints the normal page on top of the cleaned white panel.
+    case 3:
+      // Restore the original YAML renderer and run it immediately. The normal
+      // boot automation will still perform its delayed refresh, but this makes
+      // the transition from the final white cleanup to the UI deterministic.
       display_->set_writer(display::display_writer_t(boot_writer_));
+      ESP_LOGI(TAG,"Boot-Cleanup: normaler Renderer wiederhergestellt");
+      display_->update_mode(it8951::UPDATE_MODE_GC16);
+      boot_cleanup_stage_=4;
+      return;
+    default:
       boot_cleanup_active_=false;
-      ESP_LOGI(TAG,"Boot-Cleanup abgeschlossen; normaler Renderer wiederhergestellt");
+      ESP_LOGI(TAG,"Boot-Cleanup abgeschlossen");
       return;
   }
 }
