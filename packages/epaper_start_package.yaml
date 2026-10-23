@@ -217,8 +217,19 @@ template:
               {% set direct_eta = (('morgen ' if direct_dt and direct_dt.date() == (now()+timedelta(days=1)).date() else (direct_dt.strftime('%d.%m. ') if direct_dt and direct_dt.date() != now().date() else '')) + direct_dt.strftime('%H:%M')) if direct_dt else '' %}
               {% set final_eta = direct_eta if direct_eta else eta %}
               {% set final_state = state if state not in ['unknown','unavailable'] else (states(a.get('endtime','')) if a.get('endtime') else state) %}
+              {# Prefer configured progress; otherwise find the device's progress sensor. #}
+              {% set progress = namespace(value=states(a.get('progress','')) | float(none) if a.get('progress') else none) %}
+              {% set appliance_device = device_id(a.state) or (device_id(a.get('endtime','')) if a.get('endtime') else none) %}
+              {% if progress.value is none and appliance_device %}
+                {% for entity in device_entities(appliance_device) | select('match','^sensor[.]') | reject('in', excluded) %}
+                  {% if state_attr(entity,'icon') == 'mdi:progress-clock' or (state_attr(entity,'unit_of_measurement') == '%' and (entity | regex_search('progress|fortschritt'))) %}
+                    {% set candidate = states(entity) | float(none) %}
+                    {% if candidate is not none and progress.value is none %}{% set progress.value = candidate %}{% endif %}
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
               {% set laundry.items = laundry.items + [dict(name=a.name, state=labels.get(final_state,final_state), raw_state=final_state,
-                eta=final_eta, progress=states(a.get('progress','')) | float(none) if a.get('progress') else none,
+                eta=final_eta, progress=progress.value,
                 program=state_attr(a.state,'current_program_guess'))] %}
             {% endfor %}
 

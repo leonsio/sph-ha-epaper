@@ -15,7 +15,7 @@ script:
       plan.condition=id(epaper_weather_condition).state;
       plan.temperature=id(weather_outdoor_temperature).state;
       plan.desired[6]=plan.condition+"|"+plan.temperature;
-      plan.waste.clear();plan.devices.clear();
+      plan.waste.clear();plan.devices.clear();plan.appliances.clear();
       auto doc=esphome::json::parse_json(id(start_dashboard_json).state);
       const int64_t stamp=doc["timestamp"].as<int64_t>();
       if(!doc.isNull() && !doc.overflowed() && doc["version"].as<int>()==1 && screensaver_ui::fresh(now.timestamp,stamp)){
@@ -32,7 +32,13 @@ script:
           const std::string state=device["raw_state"]|label;
           if(!screensaver_ui::appliance(name) || !screensaver_ui::running(state))continue;
           const std::string eta=device["eta"]|"";
-          plan.devices.push_back(name+" · "+label+(eta.empty()?"":" · Ende "+eta));
+          float progress=-1;
+          if(!device["progress"].isNull()){
+            const float value=device["progress"].as<float>();
+            if(std::isfinite(value))progress=std::max(0.0f,std::min(100.0f,value));
+          }
+          plan.appliances.push_back({name,label,eta,progress});
+          plan.devices.push_back(name+" · "+label+" · "+eta+" · "+std::to_string(progress));
         }
       }
       for(auto *rows:{&plan.waste,&plan.devices}){

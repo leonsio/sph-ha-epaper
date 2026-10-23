@@ -161,17 +161,13 @@
       const int appliance_w=(col-66)/3;
       for(JsonObject a:devices){if(i>=3)break;int x=right+22+i*(appliance_w+11);
         std::string appliance=a["name"]|"Gerät";
-        std::string appliance_key=appliance;
-        std::transform(appliance_key.begin(), appliance_key.end(), appliance_key.begin(),
-                       [](unsigned char c){ return (char)std::tolower(c); });
-        const char *appliance_icon = appliance_key.find("trockner")!=std::string::npos ? "\U000F0917" :
-                                     (appliance_key.find("geschirr")!=std::string::npos ? "\U000F0AAC" : "\U000F072A");
+        const char *appliance_icon=screensaver_ui::appliance_icon(appliance);
         center(x+appliance_w/2,163,appliance_icon,id(mdi_start_appliance),INK);
         text(x,229,fit(appliance,id(ui_body),appliance_w),id(ui_body),INK,appliance_w);
         text(x,274,fit(a["state"]|"Unbekannt",id(font_lesson),appliance_w),id(font_lesson),INK,appliance_w);
         std::string eta=a["eta"]|"";
         text(x,324,fit(eta.empty()?"Ende: --":"ca. fertig "+eta,id(ui_body),appliance_w),id(ui_body),INK,appliance_w);
-        if(!a["progress"].isNull() && appliance.find("Geschirr") == std::string::npos){
+        if(!a["progress"].isNull()){
           const float p=std::max(0.0f,std::min(100.0f,a["progress"].as<float>()));
           fast_rect(x,382,appliance_w,9,LIGHT);fast_rect(x,382,(int)(appliance_w*p/100.0f),9,DARK);
         }i++;}

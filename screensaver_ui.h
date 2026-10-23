@@ -38,11 +38,21 @@ inline bool appliance(const std::string &name) {
 inline std::string signature(const std::vector<std::string> &rows) {
   std::string out;for(const auto &row:rows){out+=row;out+='\n';}return out;
 }
+inline const char *appliance_icon(const std::string &name) {
+  const auto key=lower(name);
+  return key.find("trockner")!=std::string::npos || key.find("dryer")!=std::string::npos ? "\U000F0917" :
+      (key.find("geschirr")!=std::string::npos || key.find("dishwasher")!=std::string::npos ? "\U000F0AAC" : "\U000F072A");
+}
+struct Device {
+  std::string name,state,eta;
+  float progress{-1};
+};
 struct Plan {
   // Parts 1..4: individual digits; 5: analog hands; 6/7: date/weather;
   // 8/9: left/right hints. Never combine distant parts in one driver update.
   std::array<std::string,9> desired{},painted{};
   std::vector<std::string> waste,devices;
+  std::vector<Device> appliances;
   std::string condition,temperature;
   int64_t epoch{0};
   uint16_t pending{0};
