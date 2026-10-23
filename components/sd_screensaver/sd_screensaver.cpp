@@ -7,6 +7,7 @@
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "esp_random.h"
+#include <pngle.h>
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -58,7 +59,7 @@ bool SDScreensaver::mount_(){
     ESP_LOGW(TAG,"SD nicht lesbar: %s (kein Formatieren)",esp_err_to_name(err));
     card_=nullptr;gpio_set_level(GPIO_NUM_39,0);return false;
   }
-  mounted_=true;scan_();ESP_LOGI(TAG,"SD bereit: %u BMP/Gray4-Dateien",unsigned(files_.size()));return true;
+  mounted_=true;scan_();ESP_LOGI(TAG,"SD bereit: %u PNG/BMP/Gray4-Dateien",unsigned(files_.size()));return true;
 }
 void SDScreensaver::unmount_(){
   if(mounted_)esp_vfs_fat_sdcard_unmount("/sdcard",card_);
@@ -101,7 +102,7 @@ void SDScreensaver::scan_(){
       if(dot==std::string::npos)continue;
       std::string ext=name.substr(dot);
       for(auto &c:ext)c=std::tolower(static_cast<unsigned char>(c));
-      if(ext!=".bmp"&&ext!=".gray4"){
+      if(ext!=".bmp"&&ext!=".gray4"&&ext!=".png"){
         ESP_LOGD(TAG,"Uebersprungen (Format): %s",name.c_str());
         continue;
       }
@@ -120,7 +121,7 @@ void SDScreensaver::scan_(){
       if(files_.size()>=1024)break;
     }
     closedir(dir);
-    ESP_LOGI(TAG,"SD-Suche: %s: %u Eintraege; insgesamt %u BMP/Gray4-Bilder",base,entries,unsigned(files_.size()));
+    ESP_LOGI(TAG,"SD-Suche: %s: %u Eintraege; insgesamt %u PNG/BMP/Gray4-Bilder",base,entries,unsigned(files_.size()));
     if(files_.size()>=1024)break;
   }
 }
@@ -199,6 +200,100 @@ bool SDScreensaver::load_bmp_(const std::string &path,uint8_t *out){
   }
   allocator.deallocate(row,stride);close();return ok;
 }
+// PNGLE expands scanlines progressively; no full RGB/RGBA image is allocated.
+struct PngTarget {
+  uint8_t *out;
+  int width, height, iw{0}, ih{0}, dw{0}, dh{0}, ox{0}, oy{0};
+  bool valid{false}, done{false};
+  uint32_t pixels{0};
+};
+static void png_init(pngle_t *png,uint32_t w,uint32_t h){
+  auto &t=*static_cast<PngTarget *>(pngle_get_user_data(png));
+  if(!w||!h||w>8192||h>8192)return;
+  t.iw=w;t.ih=h;
+  double scale=std::min(double(t.width)/w,double(t.height)/h);
+  t.dw=std::max(1,int(w*scale));t.dh=std::max(1,int(h*scale));
+  t.ox=(t.width-t.dw)/2;t.oy=(t.height-t.dh)/2;t.valid=true;
+}
+static void png_draw(pngle_t *png,uint32_t x,uint32_t y,uint32_t w,uint32_t h,const uint8_t rgba[4]){
+  auto &t=*static_cast<PngTarget *>(pngle_get_user_data(png));
+  if(!t.valid)return;
+  // Nearest-neighbour scaling, including PNGLE's interlaced rectangles.
+  int x0,x1,y0,y1;
+  if(t.dw==t.iw&&t.dh==t.ih){
+    x0=x;y0=y;x1=std::min(uint32_t(t.dw),x+w);y1=std::min(uint32_t(t.dh),y+h);
+  }else{
+    x0=(uint64_t(x)*t.dw+t.iw-1)/t.iw;
+    x1=std::min(uint64_t(t.dw),((uint64_t(x)+w)*t.dw+t.iw-1)/t.iw);
+    y0=(uint64_t(y)*t.dh+t.ih-1)/t.ih;
+    y1=std::min(uint64_t(t.dh),((uint64_t(y)+h)*t.dh+t.ih-1)/t.ih);
+  }
+  // Composite transparency on the white e-paper background.
+  unsigned luminance=(77U*rgba[0]+150U*rgba[1]+29U*rgba[2]+128)>>8;
+  uint8_t v=gray4((luminance*rgba[3]+255U*(255-rgba[3])+127)/255);
+  for(int dy=y0;dy<y1;dy++)for(int dx=x0;dx<x1;dx++){
+    int px=dx+t.ox;size_t i=size_t(dy+t.oy)*((t.width+1)/2)+px/2;
+    t.out[i]=(px&1)?((t.out[i]&0xf0)|v):((t.out[i]&0x0f)|(v<<4));
+  }
+  if((++t.pixels&1023U)==0)App.feed_wdt();
+}
+static void png_done(pngle_t *png){
+  static_cast<PngTarget *>(pngle_get_user_data(png))->done=true;
+}
+bool SDScreensaver::load_png_(const std::string &path,uint8_t *out){
+  FILE *f=fopen(path.c_str(),"rb");if(!f)return false;
+  setvbuf(f,nullptr,_IONBF,0); // read the SD card in explicit large blocks
+  // Bound dimensions before the decoder allocates source scanline buffers.
+  uint8_t header[24];
+  auto be32=[](const uint8_t *p){return uint32_t(p[0])<<24|uint32_t(p[1])<<16|uint32_t(p[2])<<8|p[3];};
+  if(fread(header,1,sizeof(header),f)!=sizeof(header)||
+     memcmp(header,"\x89PNG\r\n\x1a\n",8)||memcmp(header+12,"IHDR",4)||
+     be32(header+8)!=13||!be32(header+16)||!be32(header+20)||
+     be32(header+16)>8192||be32(header+20)>8192||fseek(f,0,SEEK_SET)!=0){
+    fclose(f);return false;
+  }
+  RAMAllocator<uint8_t> allocator;
+  constexpr size_t CHUNK=32768;
+  uint8_t *engine=allocator.allocate(PNGLE_T_SIZE),*input=allocator.allocate(CHUNK);
+  if(!engine||!input){
+    if(engine)allocator.deallocate(engine,PNGLE_T_SIZE);
+    if(input)allocator.deallocate(input,CHUNK);
+    fclose(f);ESP_LOGW(TAG,"Kein RAM fuer PNG-Decoder");return false;
+  }
+  memset(engine,0,PNGLE_T_SIZE);
+  auto *png=reinterpret_cast<pngle_t *>(engine);
+  pngle_reset(png);
+  PngTarget target{out,width_,height_};
+  pngle_set_user_data(png,&target);
+  pngle_set_init_callback(png,png_init);
+  pngle_set_draw_callback(png,png_draw);
+  pngle_set_done_callback(png,png_done);
+  size_t pending=0;bool ok=true;
+  while(!target.done){
+    size_t read=fread(input+pending,1,CHUNK-pending,f);
+    size_t available=pending+read,consumed=0;
+    if(ferror(f)||available==0){ok=false;break;}
+    while(consumed<available&&!target.done){
+      int fed=pngle_feed(png,input+consumed,available-consumed);
+      if(fed<0){
+        ESP_LOGW(TAG,"PNG-Fehler: %s",pngle_error(png));ok=false;break;
+      }
+      if(!fed)break;
+      consumed+=fed;App.feed_wdt();
+    }
+    if(!ok)break;
+    pending=available-consumed;
+    if(target.done)break;
+    if(pending==CHUNK||(!read&&pending)){ok=false;break;}
+    if(pending)memmove(input,input+consumed,pending);
+  }
+  ok=ok&&target.valid&&target.done;
+  if(!ok)ESP_LOGW(TAG,"PNG unvollstaendig oder nicht unterstuetzt: %s",path.c_str());
+  pngle_reset(png); // frees the decoder's dynamically allocated scanline buffers
+  allocator.deallocate(engine,PNGLE_T_SIZE);allocator.deallocate(input,CHUNK);
+  fclose(f);return ok;
+}
+
 bool SDScreensaver::load_gray4_(const std::string &path,uint8_t *out){
   FILE *f=fopen(path.c_str(),"rb");if(!f)return false;
   // G4E1, uint16 LE logical width/height, then row-major high nibble first.
@@ -222,7 +317,10 @@ bool SDScreensaver::next(){
       size_t i=esp_random()%candidates.size();chosen=candidates[i];memset(candidate,0xff,n);
       auto dot=chosen.find_last_of('.');std::string ext=chosen.substr(dot);
       for(auto &c:ext)c=std::tolower(static_cast<unsigned char>(c));
-      ok=ext==".gray4"?load_gray4_(chosen,candidate):load_bmp_(chosen,candidate);
+      uint32_t load_start=millis();
+      ok=ext==".gray4"?load_gray4_(chosen,candidate):
+         ext==".png"?load_png_(chosen,candidate):load_bmp_(chosen,candidate);
+      ESP_LOGI(TAG,"Bild laden: %s: %u ms (%s)",chosen.c_str(),unsigned(millis()-load_start),ok?"OK":"Fehler");
       if(ok)break;
       ESP_LOGW(TAG,"Ungueltiges/nicht unterstuetztes Bild: %s",chosen.c_str());candidates.erase(candidates.begin()+i);
     }
