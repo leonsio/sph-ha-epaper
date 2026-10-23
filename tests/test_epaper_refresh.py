@@ -149,6 +149,33 @@ int main() {
     assert(refresh.idle());
   }
   assert(display.standby_count == 63);
+  // Picture path: one INIT white, then directly the normal picture writer.
+  for(int picture=0;picture<2;++picture){
+    const size_t before=display.modes.size();
+    const int calls_before=ui_calls;
+    refresh.clean(true);
+    assert(!refresh.idle());
+    refresh.loop();
+    assert(display.modes.size()==before+1);
+    assert(display.modes.back()==it8951::UPDATE_MODE_INIT);
+    assert(display.colors.back()==15);
+    assert(ui_calls==calls_before);
+    display.submit_finished();refresh.loop();
+    for(int tick=0;tick<10;++tick)refresh.loop();
+    assert(!refresh.idle());
+    assert(display.modes.size()==before+1);
+    display.finish_waveform();refresh.loop();
+    assert(!refresh.idle());
+    display.finish_standby();
+    assert(refresh.idle());
+    assert(display.modes.size()==before+1); // no second cleaning waveform
+    display.update_mode(it8951::UPDATE_MODE_GC16);
+    assert(ui_calls==calls_before+1);
+    display.submit_finished();refresh.loop();
+    display.finish_waveform();refresh.loop();
+    display.finish_standby();
+    assert(refresh.idle());
+  }
 }
 '''
 
@@ -232,7 +259,7 @@ int main(){
         self.assertEqual(branch["condition"]["lambda"],
                          'return id(screensaver_source).current_option()=="Bild";')
         cleaning = branch["then"]
-        self.assertIn("id(panel_refresh).clean();", cleaning[0]["lambda"])
+        self.assertIn("id(panel_refresh).clean(true);", cleaning[0]["lambda"])
         self.assertEqual(cleaning[1]["wait_until"]["condition"]["lambda"],
                          "return id(panel_refresh).idle();")
         self.assertIn("id(full_refresh_due)=true;", cleaning[2]["lambda"])
@@ -241,8 +268,8 @@ int main(){
             {"script.execute": "cleanup_if_due"}, {"script.wait": "cleanup_if_due"}])
         image = show["then"][1]["if"]["then"]
         self.assertEqual(image[1]["it8951.update"]["mode"], "GC16")
-        # The physical state machine below separately verifies all three
-        # cleaning waveforms, writer restore and standby before idle().
+        # The physical state machine verifies a single INIT for quick cleanup,
+        # writer restore and physical completion before idle().
         self.assertEqual(image[2]["wait_until"]["condition"]["lambda"],
                          "return id(panel_refresh).idle();")
 
