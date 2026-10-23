@@ -17,7 +17,10 @@
 namespace esphome::sd_screensaver {
 static constexpr const char *TAG="sd_screensaver";
 static constexpr uint32_t MAGIC=0xE1003A01;
-static constexpr uint32_t BOOT_CLEANUP_PAUSE_MS=1200UL;
+static constexpr uint32_t BOOT_CLEANUP_PAUSE_MS=1600UL;
+static constexpr uint32_t BOOT_COLD_START_WAIT_MS=2500UL;
+static constexpr uint32_t BOOT_WARM_START_WAIT_MS=500UL;
+static constexpr uint32_t USER_FULL_REFRESH_WINDOW_MS=2500UL;
 static RTC_DATA_ATTR SleepState retained;
 bool sleeping_screensaver_input_wake(){
   auto cause=esp_sleep_get_wakeup_cause();
@@ -47,27 +50,34 @@ void SDScreensaver::setup(){
   last_activity_=millis();
   const auto cause=esp_sleep_get_wakeup_cause();
   const auto reset_reason=esp_reset_reason();
-  resume_=retained.magic==MAGIC && retained.active && cause==ESP_SLEEP_WAKEUP_TIMER;
+  const bool retained_valid=retained.magic==MAGIC;
+  resume_=retained_valid && retained.active && cause==ESP_SLEEP_WAKEUP_TIMER;
   if(resume_){
     clock_active_=retained.clock_active;
     if(clock_active_)clock_minute_=retained.clock_minute;
   }else retained={MAGIC,false,false,0,{0}};
 
-  // Use the explicit reset reason instead of inferring a reboot from the wakeup
-  // cause. The physical E1003 power/restart switch can report POWERON or EXT,
-  // while OTA/software restarts report SW. Only genuine deep-sleep wakes skip
-  // the cleanup so battery wake cycles stay fast.
-  boot_cleanup_active_=reset_reason!=ESP_RST_DEEPSLEEP;
+  // A real battery power-cycle loses RTC_DATA_ATTR. This is a more robust cold
+  // boot signal than relying only on esp_reset_reason(), which can differ with
+  // board/power-path behaviour. Genuine deep-sleep wakes retain the marker and
+  // keep their fast path. OTA/software resets still receive the cleanup.
+  boot_cleanup_cold_start_=!retained_valid;
+  const bool genuine_deep_sleep_wake=retained_valid && reset_reason==ESP_RST_DEEPSLEEP &&
+      (cause==ESP_SLEEP_WAKEUP_TIMER || cause==ESP_SLEEP_WAKEUP_EXT0 || cause==ESP_SLEEP_WAKEUP_EXT1);
+  boot_cleanup_active_=boot_cleanup_cold_start_ || !genuine_deep_sleep_wake;
   boot_cleanup_stage_=0;
   boot_cleanup_pause_pending_=false;
   boot_cleanup_pause_until_=0;
-  ESP_LOGI(TAG,"Reset-Ursache: %s (%d), Wakeup-Ursache: %d",
-           reset_reason_name(reset_reason),(int)reset_reason,(int)cause);
+  boot_cleanup_start_after_=0;
+  user_full_refresh_until_=0;
+  ESP_LOGI(TAG,"Reset-Ursache: %s (%d), Wakeup-Ursache: %d, RTC-Marker: %s",
+           reset_reason_name(reset_reason),(int)reset_reason,(int)cause,
+           retained_valid?"erhalten":"KALTSTART");
   if(boot_cleanup_active_)
     ESP_LOGI(TAG,"Boot-Cleanup vorgemerkt: WEISS -> SCHWARZ -> WEISS -> SCHWARZ -> WEISS (GC16, %u ms Pause)",
              (unsigned)BOOT_CLEANUP_PAUSE_MS);
   else
-    ESP_LOGI(TAG,"Boot-Cleanup uebersprungen: Deep-Sleep-Wakeup");
+    ESP_LOGI(TAG,"Boot-Cleanup uebersprungen: bestaetigter Deep-Sleep-Wakeup");
 
   // Display CS must stay deasserted while the SD card enters SPI mode.
   gpio_set_direction(GPIO_NUM_10,GPIO_MODE_OUTPUT);gpio_set_level(GPIO_NUM_10,1);
@@ -78,6 +88,18 @@ void SDScreensaver::setup(){
 }
 void SDScreensaver::loop(){
   if(!boot_cleanup_active_ || !panel_idle_())return;
+
+  // Cold power-on needs a little settling time after the IT8951 reports IDLE.
+  // OTA/software resets use the shorter warm-start delay.
+  if(boot_cleanup_stage_==0){
+    if(boot_cleanup_start_after_==0){
+      const uint32_t wait=boot_cleanup_cold_start_?BOOT_COLD_START_WAIT_MS:BOOT_WARM_START_WAIT_MS;
+      boot_cleanup_start_after_=millis()+wait;
+      ESP_LOGI(TAG,"Boot-Cleanup startet nach %u ms Panel-Stabilisierungszeit",(unsigned)wait);
+      return;
+    }
+    if((int32_t)(millis()-boot_cleanup_start_after_)<0)return;
+  }
 
   // Start the inter-stage pause only after the preceding physical GC16 update
   // has actually completed. This makes the cleanup visibly slower without
@@ -93,9 +115,19 @@ void SDScreensaver::loop(){
   }
 
   auto writer=&DisplayAccess::writer_;
+  auto force_full_panel=[&](){
+    display_->*(&DisplayAccess::x_low_)=0;
+    display_->*(&DisplayAccess::y_low_)=0;
+    display_->*(&DisplayAccess::x_high_)=display_->*(&DisplayAccess::width_);
+    display_->*(&DisplayAccess::y_high_)=display_->*(&DisplayAccess::height_);
+  };
   auto paint=[&](Color color,const char *name,uint8_t step,uint8_t next){
     display_->set_writer(display::display_writer_t([color](display::Display &it){it.fill(color);}));
-    ESP_LOGI(TAG,"Boot-Cleanup %u/5: %s",(unsigned)step,name);
+    // On a cold boot the software framebuffer may already contain white while
+    // the physical ePaper still retains the previous image. Explicitly forcing
+    // the complete dirty region guarantees a real full-panel transaction.
+    force_full_panel();
+    ESP_LOGI(TAG,"Boot-Cleanup %u/5: %s (FULL PANEL)",(unsigned)step,name);
     display_->update_mode(it8951::UPDATE_MODE_GC16);
     boot_cleanup_stage_=next;
     boot_cleanup_pause_pending_=true;
@@ -123,7 +155,8 @@ void SDScreensaver::loop(){
     case 5:
       // Restore the original renderer and paint the actual UI immediately.
       display_->set_writer(display::display_writer_t(boot_writer_));
-      ESP_LOGI(TAG,"Boot-Cleanup: normaler Renderer wiederhergestellt");
+      force_full_panel();
+      ESP_LOGI(TAG,"Boot-Cleanup: normaler Renderer wiederhergestellt (FULL PANEL)");
       display_->update_mode(it8951::UPDATE_MODE_GC16);
       boot_cleanup_stage_=6;
       return;
@@ -141,7 +174,21 @@ bool SDScreensaver::panel_idle_() const {
 bool SDScreensaver::display_idle() const {
   // Keep every YAML/screensaver update out of the way until the boot cleanup
   // owns the display no longer. loop() uses panel_idle_() directly.
-  return !boot_cleanup_active_ && panel_idle_();
+  const bool idle=!boot_cleanup_active_ && panel_idle_();
+  if(!idle)return false;
+
+  // Touch and the three physical buttons all call activity() before their
+  // navigation/action logic. During this short window force the next normal UI
+  // GC16 transaction to cover the whole panel. This removes remnants from the
+  // previous page while leaving autonomous minute-level updates partial.
+  if(!active_ && user_full_refresh_until_!=0 &&
+     (int32_t)(user_full_refresh_until_-millis())>0){
+    display_->*(&DisplayAccess::x_low_)=0;
+    display_->*(&DisplayAccess::y_low_)=0;
+    display_->*(&DisplayAccess::x_high_)=display_->*(&DisplayAccess::width_);
+    display_->*(&DisplayAccess::y_high_)=display_->*(&DisplayAccess::height_);
+  }
+  return true;
 }
 bool SDScreensaver::mount_(){
   gpio_set_level(GPIO_NUM_39,1);delay(200);
@@ -184,7 +231,11 @@ void SDScreensaver::scan_(){
     if(files_.size()>=1024)break;
   }closedir(dir);
 }
-void SDScreensaver::activity(){last_activity_=millis();stop();}
+void SDScreensaver::activity(){
+  last_activity_=millis();
+  user_full_refresh_until_=last_activity_+USER_FULL_REFRESH_WINDOW_MS;
+  stop();
+}
 void SDScreensaver::stop(){
   active_=false;resume_=false;clock_active_=false;retained.active=false;
   if(pixels_){RAMAllocator<uint8_t> a; a.deallocate(pixels_,size_t((width_+1)/2)*height_);pixels_=nullptr;}
