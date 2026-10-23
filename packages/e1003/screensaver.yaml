@@ -116,8 +116,27 @@ script:
 - id: screensaver_show
   mode: single
   then:
-  - script.execute: cleanup_if_due
-  - script.wait: cleanup_if_due
+  # Every new SD picture gets a physical cleaning cycle first.
+  # Clock minute updates retain their local update policy.
+  - if:
+      condition:
+        lambda: return id(screensaver_source).current_option()=="Bild";
+      then:
+      - lambda: |-
+          ESP_LOGI("sd_screensaver","Bildwechsel: vollstaendige Panelreinigung vor dem Bild");
+          id(panel_refresh).clean();
+      - wait_until:
+          condition:
+            lambda: return id(panel_refresh).idle();
+      - lambda: |-
+          id(cleanup_boot_pending)=false;
+          id(cleanup_last_ms)=millis();
+          id(force_content)=true;
+          id(full_refresh_due)=true;
+          id(screensaver_clock_full)=true;
+      else:
+      - script.execute: cleanup_if_due
+      - script.wait: cleanup_if_due
   - if:
       condition:
         lambda: return id(screensaver_source).current_option()=="Bild" || id(screensaver_clock_full);
@@ -162,3 +181,4 @@ script:
           script.is_running: deep_sleep_idle
       then:
       - script.execute: deep_sleep_idle
+
