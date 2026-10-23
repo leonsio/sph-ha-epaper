@@ -149,7 +149,14 @@ void SDScreensaver::set_pixel_(uint8_t *out,int x,int y,uint8_t v){
 }
 bool SDScreensaver::load_bmp_(const std::string &path,uint8_t *out){
   FILE *f=fopen(path.c_str(),"rb");if(!f)return false;
-  auto fail=[&](){fclose(f);return false;};
+  RAMAllocator<uint8_t> allocator;
+  constexpr size_t IO_SIZE=32768;
+  uint8_t *io=allocator.allocate(IO_SIZE);
+  if(io && setvbuf(f,reinterpret_cast<char *>(io),_IOFBF,IO_SIZE)!=0){
+    allocator.deallocate(io,IO_SIZE);io=nullptr;
+  }
+  auto close=[&](){fclose(f);if(io)allocator.deallocate(io,IO_SIZE);};
+  auto fail=[&](){close();return false;};
   uint8_t hdr[54];if(fread(hdr,1,54,f)!=54||hdr[0]!='B'||hdr[1]!='M'||le32(hdr+14)<40)return fail();
   uint32_t offset=le32(hdr+10),dib=le32(hdr+14);
   int32_t iw=int32_t(le32(hdr+18)),ih=int32_t(le32(hdr+22));
@@ -165,14 +172,20 @@ bool SDScreensaver::load_bmp_(const std::string &path,uint8_t *out){
     for(unsigned j=0;j<n;j++){uint8_t c[4];if(fread(c,1,4,f)!=4)return fail();
       palette[j]=gray4(uint8_t((77U*c[2]+150U*c[1]+29U*c[0]+128)>>8));}
   }
-  RAMAllocator<uint8_t> allocator;uint8_t *row=allocator.allocate(stride);if(!row)return fail();
+  uint8_t *row=allocator.allocate(stride);if(!row)return fail();
   double scale=std::min(double(width_)/iw,double(height_)/h);
   int dw=std::max(1,int(iw*scale)),dh=std::max(1,int(h*scale)),ox=(width_-dw)/2,oy=(height_-dh)/2;
   int prev=-1;bool ok=true;
-  for(int y=0;y<dh;y++){
+  // Walk bottom-up BMPs in file order instead of seeking backwards per row.
+  // Keep the stdio read-ahead buffer valid for adjacent source rows.
+  size_t next_position=0;
+  for(int step=0;step<dh;step++){
+    int y=top?step:dh-1-step;
     int sy=std::min(h-1,int(y/scale));
     if(sy!=prev){
-      if(fseek(f,offset+size_t(top?sy:h-1-sy)*stride,SEEK_SET)!=0||fread(row,1,stride,f)!=stride){ok=false;break;}
+      size_t position=offset+size_t(top?sy:h-1-sy)*stride;
+      if((position!=next_position && fseek(f,position,SEEK_SET)!=0)||fread(row,1,stride,f)!=stride){ok=false;break;}
+      next_position=position+stride;
       prev=sy;
     }
     for(int x=0;x<dw;x++){
@@ -184,7 +197,7 @@ bool SDScreensaver::load_bmp_(const std::string &path,uint8_t *out){
       set_pixel_(out,x+ox,y+oy,v);
     }App.feed_wdt();
   }
-  allocator.deallocate(row,stride);fclose(f);return ok;
+  allocator.deallocate(row,stride);close();return ok;
 }
 bool SDScreensaver::load_gray4_(const std::string &path,uint8_t *out){
   FILE *f=fopen(path.c_str(),"rb");if(!f)return false;
