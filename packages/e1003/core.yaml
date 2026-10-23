@@ -1,0 +1,240 @@
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [epaper_refresh, sd_screensaver]
+epaper_refresh:
+  id: panel_refresh
+  display_id: epaper
+sd_screensaver:
+  id: sd_photos
+  refresh_id: panel_refresh
+  display_id: epaper
+esphome:
+  name: maxim-epaper-e1003
+  friendly_name: Maxim ePaper E1003
+  includes:
+    - it8951_native_gray4.h
+    - epaper_home_ui.h
+    - esp32_sleep_helpers.h
+  min_version: 2026.9.0
+  on_boot:
+  - priority: 800
+    then:
+    - lambda: |-
+        id(wake_boot_start_ms) = millis();
+        // Each deep-sleep wake boots ESPHome anew. The first render is a full
+        // panel GC16 cleanup, regardless of how recently the last one occurred.
+        id(full_refresh_due) = true;
+        e1003_rtc_boot_count++;
+        id(wake_boot_count) = e1003_rtc_boot_count;
+        const esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+        id(wake_cause_code) = (int) cause;
+        id(wake_ext1_mask) = (cause == ESP_SLEEP_WAKEUP_EXT1) ? esp_sleep_get_ext1_wakeup_status() : 0ULL;
+        if (cause == ESP_SLEEP_WAKEUP_TIMER) id(wake_cause_text) = "Timer ${deep_sleep_wakeup_interval}";
+        else if (cause == ESP_SLEEP_WAKEUP_EXT0) id(wake_cause_text) = "GT911 Touch/Gesture";
+        else if (cause == ESP_SLEEP_WAKEUP_EXT1) {
+          const uint64_t m = id(wake_ext1_mask);
+          if (m & (1ULL << 3)) id(wake_cause_text) = "Taste Home";
+          else if (m & (1ULL << 4)) id(wake_cause_text) = "Taste Vor";
+          else if (m & (1ULL << 5)) id(wake_cause_text) = "Taste Zurueck";
+          else id(wake_cause_text) = "EXT1 unbekannt";
+        } else if (cause == ESP_SLEEP_WAKEUP_UNDEFINED) id(wake_cause_text) = "Power-On/Restart";
+        else id(wake_cause_text) = "Wakeup Typ " + std::to_string((int) cause);
+        ESP_LOGI("deep_sleep", "Wakeup-Diagnose: Boot #%u, cause=%d (%s); naechster Displayaufbau FULL",
+                 (unsigned) id(wake_boot_count), (int) cause, id(wake_cause_text).c_str());
+        switch (cause) {
+          case ESP_SLEEP_WAKEUP_UNDEFINED:
+            ESP_LOGI("deep_sleep", "Wakeup-Ursache: Neustart/Power-On (kein Deep-Sleep-Wakeup)");
+            break;
+          case ESP_SLEEP_WAKEUP_TIMER:
+            ESP_LOGI("deep_sleep", "Wakeup-Ursache: TIMER (${deep_sleep_wakeup_interval})");
+            break;
+          case ESP_SLEEP_WAKEUP_EXT0:
+            ESP_LOGI("deep_sleep", "Wakeup-Ursache: EXT0 / GPIO2 / GT911 Gesture (Double-Tap/Swipe)");
+            rtc_gpio_deinit(GPIO_NUM_2);
+            ESP_LOGI("deep_sleep", "GPIO2 nach EXT0-Wakeup aus RTC-Modus zurückgesetzt");
+            break;
+          case ESP_SLEEP_WAKEUP_EXT1: {
+            const uint64_t mask = esp_sleep_get_ext1_wakeup_status();
+            ESP_LOGI("deep_sleep", "Wakeup-Ursache: EXT1, Bitmaske=0x%llX", (unsigned long long) mask);
+            if (mask & (1ULL << 3)) ESP_LOGI("deep_sleep", "Wakeup-Pin: GPIO3 / Home");
+            if (mask & (1ULL << 4)) ESP_LOGI("deep_sleep", "Wakeup-Pin: GPIO4 / Vor");
+            if (mask & (1ULL << 5)) ESP_LOGI("deep_sleep", "Wakeup-Pin: GPIO5 / Zurück");
+            break;
+          }
+          default:
+            ESP_LOGW("deep_sleep", "Wakeup-Ursache: anderer ESP32-S3 Wakeup-Typ (%d)", (int) cause);
+            break;
+        }
+  - priority: 700
+    then:
+    - lambda: |-
+        const esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+        if (cause == ESP_SLEEP_WAKEUP_EXT0) {
+          ESP_LOGI("deep_sleep", "Wake-Aktion: GT911 Gesture -> aktuelle Seite beibehalten");
+          return;
+        }
+        if (cause != ESP_SLEEP_WAKEUP_EXT1) return;
+        if(esphome::sd_screensaver::sleeping_screensaver_input_wake()){
+          id(screensaver_waking)=true;
+          ESP_LOGI("sd_screensaver","Wake-Taste beendet Screensaver; Seite bleibt erhalten");
+          return;
+        }
+        const uint64_t mask = esp_sleep_get_ext1_wakeup_status();
+        auto is_enabled=[&](int p)->bool{
+          uint32_t required=p==11?16U:(p==0?1U:(p==1 || (p>=8 && p<=10)?2U:(p>=2 && p<=6?4U:8U)));
+          return (id(nav_visibility_mask)&required)!=0U;
+        };
+        const int pages[5]={0,1,2,11,7};
+        auto first_visible=[&]()->int{
+          for(int i=0;i<5;i++)if(is_enabled(pages[i]))return pages[i];
+          return 0;
+        };
+        int page=id(current_page), next=page;
+        if(mask & (1ULL << 3)){
+          next=is_enabled(0)?0:first_visible();
+          ESP_LOGI("deep_sleep", "Wake-Aktion: Home -> erste erlaubte Hauptseite %d",next);
+        }else if(mask & ((1ULL << 4)|(1ULL << 5))){
+          int direction=(mask & (1ULL << 5))?-1:1;
+          auto adjacent=[&](int top_pos)->int{
+            for(int i=1;i<=5;i++){
+              int candidate=pages[(top_pos+(direction>0?i:5-(i%5)))%5];
+              if(is_enabled(candidate))return candidate;
+            }
+            return pages[top_pos];
+          };
+          if(is_enabled(page) && page>=2 && page<=6){
+            if(direction>0 && page==6)next=adjacent(2);
+            else if(direction<0 && page==2)next=adjacent(2);
+            else next=page+(direction>0?1:-1);
+          }else if(is_enabled(page) && (page==1 || (page>=8 && page<=10))){
+            const int p[4]={1,8,9,10};
+            int pos=0;for(int i=0;i<4;i++)if(p[i]==page){pos=i;break;}
+            if(direction>0 && pos==3)next=adjacent(1);
+            else if(direction<0 && pos==0)next=adjacent(1);
+            else next=p[pos+(direction>0?1:-1)];
+          }else{
+            int pos=0;for(int i=0;i<5;i++)if(pages[i]==page){pos=i;break;}
+            next=adjacent(pos);
+          }
+          ESP_LOGI("deep_sleep", "Wake-Aktion: %s -> erlaubte Seite %d",direction>0?"Vor":"Zurueck",next);
+        }
+        if(!is_enabled(next))next=first_visible();
+        id(current_page)=next;
+
+  - priority: 600
+    then:
+    - output.turn_on: bsp_battery_enable
+    - delay: 200ms
+    - component.update: battery_voltage
+    - component.update: battery_level
+  - priority: -100
+    then:
+    - lambda: ESP_LOGI("ui_version", "SPH E1003 - SD SCREENSAVER / GRAYSCALE SAFE GC16");
+    - lambda: |-
+        // One-time migration: enable Elisa on installations carrying a restored four-tab mask.
+        // Keep the previously saved Start/Home/Maxim/Wetter choices unchanged.
+        if(!id(nav_elisa_initialized)){
+          id(nav_visibility_mask)|=16U;
+          id(nav_elisa_initialized)=true;
+          nav_elisa_initialized->update();
+          ESP_LOGI("nav_gate", "Elisa bei bestehender Installation einmalig aktiviert");
+        }
+        if((id(nav_visibility_mask)&0x1FU)==0U){id(nav_visibility_mask)=1U;id(nav_start).publish_state(true);}
+        int p=id(current_page);
+        uint32_t bit=p==11?16U:(p==0?1U:(p==1 || (p>=8 && p<=10)?2U:(p>=2 && p<=6?4U:8U)));
+        if(!(id(nav_visibility_mask)&bit)){
+          const int pages[5]={0,1,2,11,7};
+          const uint32_t bits[5]={1U,2U,4U,16U,8U};
+          for(int i=0;i<5;i++)if(id(nav_visibility_mask)&bits[i]){id(current_page)=pages[i];break;}
+        }
+        // Publish the restored mask to HA without triggering turn_on/off actions.
+        id(nav_start).publish_state((id(nav_visibility_mask)&1U)!=0U);
+        id(nav_home).publish_state((id(nav_visibility_mask)&2U)!=0U);
+        id(nav_maxim).publish_state((id(nav_visibility_mask)&4U)!=0U);
+        id(nav_elisa).publish_state((id(nav_visibility_mask)&16U)!=0U);
+        id(nav_wetter).publish_state((id(nav_visibility_mask)&8U)!=0U);
+        ESP_LOGI("nav_gate", "Boot: Navigation 0x%X, Startseite %d", (unsigned)id(nav_visibility_mask),id(current_page));
+        id(e1003_active_page).publish_state(std::to_string(id(current_page)));
+    - script.execute: navigation_visibility_store
+    - delay: 12s
+    - lambda: id(screensaver_waking)=false;
+    - script.execute: screensaver_tick
+    - script.wait: screensaver_tick
+    - script.execute: refresh_display
+    - if:
+        condition:
+          switch.is_on: deep_sleep_switch
+        then:
+          - script.execute: deep_sleep_idle
+        else:
+          - logger.log:
+              tag: deep_sleep
+              level: INFO
+              format: "Deep Sleep deaktiviert: Geraet bleibt wach; FULL alle 60min"
+esp32:
+  board: seeed_xiao_esp32s3
+  framework:
+    type: esp-idf
+  variant: ESP32S3
+  flash_size: 16MB
+logger:
+  hardware_uart: UART0
+  level: DEBUG
+  logs:
+    homeassistant.text_sensor: WARN
+    homeassistant.sensor: WARN
+    api: INFO
+    api.connection: INFO
+    ui_timing: INFO
+    timetable_timing: INFO
+    timetable_match: DEBUG
+    status_timing: DEBUG
+    touch_nav: DEBUG
+    home_ui: DEBUG
+    home_timing: DEBUG
+    wake_history: INFO
+psram:
+  mode: octal
+  speed: 80MHz
+api:
+  encryption:
+    key: !secret 'API'
+  id: e1003
+  on_client_connected:
+    - lambda: |-
+        if (id(wake_api_ms) == 0) {
+          id(wake_api_ms) = millis();
+          id(wake_api_client) = client_info;
+        }
+        ESP_LOGI("wake_history", "API verbunden: %s (%s), %u ms nach Wake",
+                 client_info.c_str(), client_address.c_str(), (unsigned) millis());
+    - script.execute: publish_wake_diagnostics
+ota:
+- platform: esphome
+wifi:
+  ssid: !secret 'wifi_ssid'
+  password: !secret 'wifi_password'
+  on_connect:
+    - lambda: |-
+        if (id(wake_wifi_ms) == 0) id(wake_wifi_ms) = millis();
+        ESP_LOGI("wake_history", "WLAN verbunden nach %u ms", (unsigned) id(wake_wifi_ms));
+  ap:
+    ssid: Maxim E1003 Fallback
+    password: test1234
+captive_portal: null
+# Deep sleep uses the configurable timer from ESPHome. The GT911 gesture INT
+# wakes through EXT0 HIGH on GPIO2; physical buttons use EXT1 ANY_LOW on GPIO3/4/5.
+deep_sleep:
+  id: deep_sleep_control
+  sleep_duration: ${deep_sleep_wakeup_interval}
+json: null
+time:
+- platform: sntp
+  id: ha_time
+  timezone: Europe/Berlin
+  servers:
+  - 0.pool.ntp.org
+  - 1.pool.ntp.org
+  - 2.pool.ntp.org

@@ -91,14 +91,24 @@ Das erhält vorhandene Pixelwerte, kann aber bei Größenänderungen Dithering-M
 verändern. Im Vorbereitungsskript ist mit `--fit cover` alternativ Zuschnitt möglich.
 Es gibt keine zusätzliche Dithering- oder Glättungsstufe.
 
-**Kein Weiß → Schwarz → Weiß und kein separates Cleanup-Bild.** Jeder Fotowechsel
-überträgt das gesamte Bild mit **GC16**, um die Graustufen zuverlässig darzustellen.
-Spätestens nach einer Stunde wird das aktuelle Vollbild wieder mit GC16 übertragen.
-Weil ein Bildwechsel höchstens 60 Minuten auseinanderliegt und bereits ein
-Vollbild-Refresh ist, startet dieser Wechsel den Stunden-Zähler neu. Ein zusätzlicher
-zweiter Refresh direkt danach ist unnötig. GC16 kann während seiner normalen
-Hardware-Wellenform sichtbar blinken; das ist kein zusätzlich eingeblendetes Bild.
-Die normale Oberfläche behält ihre bestehenden DU-Teilupdates.
+Vor jedem Bildwechsel und jedem minütlichen Uhr-Update erfolgt jetzt eine echte
+Reinigung: **INIT (weiß) → GC16 schwarz → GC16 weiß → GC16 Inhalt**.
+Die Uhr wird vollständig neu gezeichnet, einschließlich Datum und Wetter.
+So bleiben weder unveränderte Ziffern noch Wetterdaten vom letzten Teilupdate stehen.
+Das verursacht bewusst sichtbares Blinken und dauert länger als ein Teilupdate.
+
+Die allgemeine Komponente `epaper_refresh` wartet nach jeder Übertragung zusätzlich
+auf `LUTAFSR == 0`. Der IT8951-Treiber kann bereits `IDLE` melden, während die
+physische Wellenform noch läuft. Erst nach deren Ende darf die nächste Übertragung
+den Bildspeicher des Controllers überschreiben. SD-Dateiverwaltung und Bilddecodierung
+bleiben in `sd_screensaver`; die Display-Reinigung gehört nicht mehr dorthin.
+Die normale Oberfläche nutzt ebenfalls GC16; bei erzwungenem Neuaufbau,
+Seitenwechsel, Boot/Wakeup und der stündlichen Wartung wird vorher gereinigt.
+
+VCOM (`1400`, Register `2`) und Temperaturvorgabe (`25 °C`) bleiben unverändert.
+Das sind die E1003-Vorgaben; ein Foto allein erlaubt keine sichere Diagnose eines
+abweichenden Panel-VCOM oder eines Hardwareproblems. Der Effekt der neuen
+Reinigung muss am realen Gerät überprüft werden.
 
 ## Deep Sleep / USB
 
@@ -142,5 +152,6 @@ Referenzen:
 - https://github.com/espressif/esp-idf/blob/v5.5.1/components/fatfs/vfs/esp_vfs_fat.h
 
 
-Die neuen Uhrdarstellungen wurden auf YAML-/Python-Syntax und Auswahloptionen geprüft. Ein vollständiger ESPHome-Build und Hardwaretest stehen aus. Timerboot, Zeitsynchronisierung und GC16 verursachen im Deep Sleep zusätzliche Verzögerung bis zur sichtbaren Minute.
+Der Hardwaretest der überarbeiteten Display-Reinigung steht aus. Timerboot, Zeitsynchronisierung und GC16 verursachen im Deep Sleep zusätzliche Verzögerung bis zur sichtbaren Minute.
+
 

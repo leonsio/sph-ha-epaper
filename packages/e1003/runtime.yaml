@@ -1,0 +1,443 @@
+script:
+- id: navigation_visibility_store
+  mode: single
+  then:
+  - lambda: |-
+      // restore_value=true generates RestoringGlobalsComponent<uint32_t>.
+      // Call its update() through the generated component pointer. The YAML
+      // component.update validator only sees GlobalsComponent in ESPHome 2026.9.0.
+      // id(nav_visibility_mask) is the stored integer, not the component pointer.
+      nav_visibility_mask->update();
+      if (esphome::global_preferences->sync()) {
+        ESP_LOGI("nav_gate", "Bereichsauswahl dauerhaft gespeichert: 0x%X", (unsigned)id(nav_visibility_mask));
+      } else {
+        ESP_LOGE("nav_gate", "Bereichsauswahl konnte nicht dauerhaft gespeichert werden");
+      }
+- id: navigation_visibility_changed
+  mode: restart
+  then:
+  - delay: 150ms
+  - lambda: |-
+      if((id(nav_visibility_mask) & 0x1FU)==0U){
+        id(nav_visibility_mask)=1U;
+        id(nav_start).publish_state(true);
+      }
+      int p=id(current_page);
+      uint32_t required=(p==11?16U:(p==0?1U:(p==1 || (p>=8 && p<=10)?2U:(p>=2 && p<=6?4U:8U))));
+      if(!(id(nav_visibility_mask)&required)){
+        const int pages[5]={0,1,2,11,7};
+        const uint32_t bits[5]={1U,2U,4U,16U,8U};
+        for(int i=0;i<5;i++)if(id(nav_visibility_mask)&bits[i]){
+          id(current_page)=pages[i];
+          id(e1003_active_page).publish_state(std::to_string(pages[i]));
+          id(list_offset)=0;
+          ESP_LOGI("nav_gate", "Ausgeblendete Seite %d -> aktive Seite %d", p, pages[i]);
+          break;
+        }
+      }
+      id(force_content)=true;
+      ESP_LOGI("nav_gate", "Sichtbare Bereiche: 0x%X", (unsigned)id(nav_visibility_mask));
+  - if:
+      condition:
+        lambda: return id(refresh_busy);
+      then:
+      - delay: 3s
+  - script.execute: refresh_display
+# A 5-second poll detects the HA wall-clock minute edge (no drift).
+# All four number cells are updated from ONE timestamp within ONE panel update.
+# Long static labels stay untouched; only a digit-width/mode change triggers a layout rebuild.
+- id: maxim_refresh
+  mode: single
+  then:
+  - if:
+      condition:
+        lambda: return !id(sd_photos).active() && id(current_page)==2 && id(initial_render_done) && !id(refresh_busy);
+      then:
+      - lambda: |-
+          auto t=id(ha_time).now();  // ESPTime::strftime() in ESPHome 2026.9 is non-const.
+          if(!t.is_valid())return;
+          const int64_t minute_key=int64_t(t.timestamp)/60;
+          const bool day_changed=id(maxim_displayed_today)!=t.strftime("%Y-%m-%d");
+          const bool school_started=id(maxim_target_epoch)>0 && int64_t(t.timestamp)>=id(maxim_target_epoch);
+          if(id(full_refresh_due)||id(force_content)||day_changed||school_started){
+            ESP_LOGI("maxim_refresh","Schultagswechsel / Full Refresh: gesamte Maxim-Seite");
+            id(force_content)=true;
+            id(maxim_partial_refresh)=false;
+            id(maxim_time_part)=0;
+            id(dirty_pages)|=(1U<<2);
+            return;
+          }
+          if(minute_key==id(maxim_last_minute_key))return;
+          // Read time ONCE. Keep the same epoch for clock and countdown.
+          id(maxim_tick_epoch)=int64_t(t.timestamp);
+          id(maxim_last_minute_key)=minute_key;
+          const int64_t remaining=std::max(int64_t(0),
+              (id(maxim_target_epoch)-id(maxim_tick_epoch)+59)/60);
+          const bool hours_mode=remaining>=60;
+          const int64_t hours=remaining/60;
+          const bool hour_width_changed=hours_mode && id(maxim_school_hours_mode) &&
+              std::to_string(hours).size()!=std::to_string(id(maxim_school_hours_value)).size();
+          if(id(maxim_target_epoch)>0 &&
+              (hours_mode!=id(maxim_school_hours_mode)||hour_width_changed)){
+            // Units move only when a complete count segment disappears/changes digit width.
+            id(force_content)=true;
+            id(maxim_partial_refresh)=false;
+            id(maxim_time_part)=0;
+            ESP_LOGI("maxim_refresh","Stundenfeld wechselt Format -> einmaliger Layout-Refresh");
+          }else{
+            id(maxim_time_part)=5;
+            id(maxim_partial_refresh)=true;
+            ESP_LOGI("maxim_refresh","Synchroner Ziffern-Refresh um %02d:%02d (snapshot=%lld)",
+                     t.hour,t.minute,(long long)id(maxim_tick_epoch));
+          }
+          id(dirty_pages)|=(1U<<2);
+      - if:
+          condition:
+            lambda: return id(force_content) || id(full_refresh_due) || id(maxim_time_part)==5;
+          then:
+          - script.execute: refresh_display
+          - script.wait: refresh_display
+- id: start_refresh
+  mode: restart
+  then:
+  - delay: 1200ms
+  - if:
+      condition:
+        lambda: return !id(sd_photos).active() && id(current_page)==0 && id(initial_render_done) && !id(refresh_busy);
+      then:
+      - lambda: |-
+          id(start_partial_refresh)=true;
+          id(dirty_pages)|=1U;
+      - script.execute: refresh_display
+- id: home_refresh
+  mode: restart
+  then:
+  - delay: 750ms
+  - wait_until:
+      condition:
+        lambda: return !id(refresh_busy);
+  - if:
+      condition:
+        lambda: return !id(sd_photos).active() && id(current_page)==8;
+      then:
+      - lambda: |-
+          // Home payload changes redraw only the visible device cards whose
+          // JSON changed. On the very first render the normal full path wins.
+          id(home_partial_refresh) = id(initial_render_done) && !id(full_refresh_due);
+          ESP_LOGD("ui_refresh", "Home: Aktualisierung %s", id(home_partial_refresh) ? "PARTIAL" : "FULL");
+      - script.execute: refresh_display
+- id: home_feedback_timeout
+  mode: restart
+  then:
+  - delay: 20s
+  - if:
+      condition:
+        lambda: return id(home_waiting_state);
+      then:
+      - lambda: |-
+          id(home_message)="Noch keine Zustandsänderung bestätigt – HA-Gerätestatus prüfen.";
+          ESP_LOGW("home_ui","Keine Zustandsaenderung fuer %s nach 20 s; keine lokale Statusannahme",id(home_pending_entity).c_str());
+      - script.execute: home_refresh
+# A tap only requests a state change; item removal follows the updated HA payload.
+- id: shopping_complete
+  mode: single
+  parameters:
+    item_uid: string
+    item_name: string
+  then:
+  - lambda: |-
+      ESP_LOGI("shopping", "Einkauf abhaken: %s (UID=%s)", item_name.c_str(), item_uid.c_str());
+  - homeassistant.action:
+      action: script.epaper_shopping_complete
+      data:
+        item_uid: !lambda return item_uid;
+        item_name: !lambda return item_name;
+      on_success:
+      - lambda: ESP_LOGI("shopping", "HA hat Einkaufs-Aktion angenommen; warte auf neue Liste");
+      on_error:
+      - lambda: ESP_LOGW("shopping", "Einkauf konnte nicht abgehakt werden; HA-Script/API-Berechtigung pruefen");
+- id: home_command
+  mode: single
+  parameters:
+    entity: string
+    operation: string
+    value: string
+  then:
+  - lambda: |-
+      id(home_pending_entity)=entity;
+      id(home_pending_before).clear();
+      auto snapshot=esphome::json::parse_json(id(home_rooms_json).state);
+      if(!snapshot.isNull() && !snapshot.overflowed()) {
+        JsonArray rooms=snapshot["rooms"].as<JsonArray>();
+        for(JsonObject room:rooms) {
+          JsonArray entities=room["entities"].as<JsonArray>();
+          for(JsonObject e:entities)if(e["id"].as<std::string>()==entity)
+            serializeJson(e,id(home_pending_before));
+        }
+      }
+      id(home_waiting_state)=true;
+      id(home_message)="Befehl wird gesendet …";
+      ESP_LOGI("home_ui", "Bedienung: %s / %s / %s", entity.c_str(), operation.c_str(), value.c_str());
+  - script.execute: home_feedback_timeout
+  - homeassistant.action:
+      action: script.epaper_home_control
+      data:
+        entity: !lambda return entity;
+        operation: !lambda return operation;
+        value: !lambda return value;
+      on_success:
+      - lambda: |-
+          if(id(home_waiting_state))id(home_message)="Befehl übergeben; warte auf Gerätestatus.";
+          ESP_LOGI("home_ui", "Home Assistant hat den Befehl angenommen");
+      - script.execute: home_refresh
+      on_error:
+      - lambda: |-
+          id(home_waiting_state)=false;
+          id(home_message)="Befehl fehlgeschlagen – Verbindung und Freigabe prüfen.";
+          ESP_LOGW("home_ui", "Home Assistant Aktion fehlgeschlagen");
+      - script.execute: home_refresh
+  - script.execute: home_refresh
+- id: publish_wake_diagnostics
+  mode: single
+  then:
+  - delay: 250ms
+  - if:
+      condition:
+        lambda: return !id(wake_diag_published) && id(wake_api_ms) > 0 && id(wake_display_ms) > 0;
+      then:
+      - lambda: |-
+          const uint32_t now = millis();
+          const uint32_t wifi_ms = id(wake_wifi_ms);
+          const uint32_t api_ms = id(wake_api_ms);
+          const uint32_t display_ms = id(wake_display_ms);
+          ESP_LOGI("wake_history", "================ WAKE DIAGNOSE ================");
+          ESP_LOGI("wake_history", "Boot #%u | Ursache: %s | cause=%d | EXT1=0x%llX",
+                   (unsigned) id(wake_boot_count), id(wake_cause_text).c_str(), id(wake_cause_code),
+                   (unsigned long long) id(wake_ext1_mask));
+          ESP_LOGI("wake_history", "Wake -> WLAN: %u ms | API: %u ms | Display: %u ms | jetzt: %u ms",
+                   (unsigned) wifi_ms, (unsigned) api_ms, (unsigned) display_ms, (unsigned) now);
+          ESP_LOGI("wake_history", "API-Client: %s", id(wake_api_client).empty() ? "noch unbekannt" : id(wake_api_client).c_str());
+          ESP_LOGI("wake_history", "=================================================");
+          id(wake_last_cause).publish_state(id(wake_cause_text));
+          id(wake_api_client_sensor).publish_state(id(wake_api_client));
+          id(wake_boot_count_sensor).publish_state((float) id(wake_boot_count));
+          if (wifi_ms > 0) id(wake_wifi_time_sensor).publish_state((float) wifi_ms);
+          if (api_ms > 0) id(wake_api_time_sensor).publish_state((float) api_ms);
+          if (display_ms > 0) id(wake_display_time_sensor).publish_state((float) display_ms);
+          id(wake_diag_published) = true;
+- id: deep_sleep_idle
+  mode: restart
+  then:
+  - if:
+      condition:
+        switch.is_on: deep_sleep_switch
+      then:
+      - delay: ${deep_sleep_idle_timeout}
+      # If the user intentionally opened the Energy tab, allow continuous
+      # minute refreshes. A button/touch leaving the tab restarts this idle
+      # script and restores the normal 90s sleep timer.
+      - wait_until:
+          condition:
+            lambda: |-
+              if(id(screensaver_enabled) && (id(screensaver_source).current_option()!="Bild" || id(sd_photos).ready()))
+                return id(sd_photos).active() && !id(refresh_busy) && id(panel_refresh).idle() &&
+                       id(e1003_usb_power).has_state() && !id(e1003_usb_power).state;
+              return (id(current_page)!=9 || !${energy_keep_awake}) && (id(current_page)!=10 || !${solar_keep_awake}) && (id(current_page)!=2 || !${maxim_keep_awake}) && (id(current_page)!=11 || !${elisa_keep_awake});
+      - wait_until:
+          condition:
+            lambda: return !id(refresh_busy) && id(panel_refresh).idle();
+      - lambda: |-
+          id(deep_sleep_prepare_ok)=false;
+          ESP_LOGI("deep_sleep", "${deep_sleep_idle_timeout} ohne Bedienung -> GT911 Gesture Mode vorbereiten");
+
+          // GT911 programming guide: write command 0x08 to 0x8046 and then 0x8040.
+          // In Gesture Mode INT becomes HIGH / pulses HIGH on double-tap, swipe or supported gesture.
+          const uint8_t gesture_cfg[3] = {0x80, 0x46, 0x08};
+          const uint8_t gesture_cmd[3] = {0x80, 0x40, 0x08};
+          const auto e1 = id(e1003_i2c).write(0x5D, gesture_cfg, sizeof(gesture_cfg));
+          const auto e2 = id(e1003_i2c).write(0x5D, gesture_cmd, sizeof(gesture_cmd));
+          ESP_LOGI("deep_sleep", "GT911 Gesture Mode I2C: reg8046=%d reg8040=%d (0=OK)", (int)e1, (int)e2);
+          if (e1 != esphome::i2c::ERROR_OK || e2 != esphome::i2c::ERROR_OK) {
+            ESP_LOGE("deep_sleep", "GT911 Gesture Mode konnte nicht aktiviert werden; Deep Sleep wird für Sicherheit abgebrochen");
+            return;
+          }
+
+          // ESP32-S3 cannot use opposite trigger levels in one EXT1 set on this target.
+          // Therefore: buttons use EXT1 ANY_LOW, GT911 gesture INT uses EXT0 HIGH.
+          esp_sleep_disable_ext1_wakeup_io(0);
+          esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT0);
+          const uint64_t button_mask = (1ULL << 3) | (1ULL << 4) | (1ULL << 5);
+          const esp_err_t wb = esp_sleep_enable_ext1_wakeup(button_mask, ESP_EXT1_WAKEUP_ANY_LOW);
+          const esp_err_t wt = esp_sleep_enable_ext0_wakeup(GPIO_NUM_2, 1);
+          ESP_LOGI("deep_sleep", "Wakeup konfiguriert: EXT1 Tasten LOW err=%d, EXT0 GT911 GPIO2 HIGH err=%d", (int)wb, (int)wt);
+          if (wb != ESP_OK || wt != ESP_OK) {
+            ESP_LOGE("deep_sleep", "EXT0/EXT1-Wakeup konnte nicht konfiguriert werden; Deep Sleep wird abgebrochen");
+            return;
+          }
+          id(deep_sleep_prepare_ok)=true;
+          id(sleep_indicator)=!id(sd_photos).active();
+          id(status_dirty)=true;
+          if(!id(sd_photos).active()) ESP_LOGI("deep_sleep", "Sleep-Symbol wird vor Deep Sleep auf das ePaper geschrieben");
+          ESP_LOGI("deep_sleep", "Deep Sleep: Wake via Double-Tap/Swipe, Tasten oder ${deep_sleep_wakeup_interval}-Timer");
+      - if:
+          condition:
+            lambda: return id(deep_sleep_prepare_ok) && id(deep_sleep_switch).state;
+          then:
+          - if:
+              condition:
+                lambda: return !id(sd_photos).active();
+              then:
+                - it8951.update:
+                    id: epaper
+                    mode: GC16
+          - wait_until:
+              condition:
+                lambda: return id(panel_refresh).idle();
+          - lambda: |-
+              if(id(sd_photos).active()){
+                const bool clock=id(screensaver_source).current_option()!="Bild";
+                const uint32_t minutes=clock?1:std::stoul(std::string(id(screensaver_interval).current_option().c_str()));
+                id(sd_photos).prepare_sleep();
+                auto now=id(ha_time).now();
+                id(deep_sleep_control).set_sleep_duration(clock && now.is_valid() ? (60-now.second)*1000UL : id(sd_photos).remaining_ms(minutes));
+              }
+          - delay: 250ms
+          - if:
+              condition:
+                switch.is_on: deep_sleep_switch
+              then:
+                - deep_sleep.enter: deep_sleep_control
+          else:
+          - lambda: |-
+              id(sleep_indicator)=false;
+              id(status_dirty)=true;
+              ESP_LOGW("deep_sleep", "Deep Sleep nicht gestartet; Gerät bleibt für Diagnose wach");
+- id: navigate_pages
+  mode: single
+  parameters:
+    direction: int
+  then:
+  - lambda: |-
+      if(id(screensaver_waking)){id(screensaver_waking)=false;return;}
+      auto allowed=[&](int p)->bool{
+        uint32_t bit=p==11?16U:(p==0?1U:(p==1 || (p>=8 && p<=10)?2U:(p>=2 && p<=6?4U:8U)));
+        return (id(nav_visibility_mask)&bit)!=0U;
+      };
+      const int top_pages[5]={0,1,2,11,7};
+      if(direction==0){
+        for(int i=0;i<5;i++)if(allowed(top_pages[i])){id(select_page).execute(top_pages[i]);break;}
+        return;
+      }
+      const int page=id(current_page);
+      auto adjacent_top=[&](int position)->int{
+        for(int i=1;i<=5;i++){
+          const int candidate=top_pages[(position+(direction>0?i:5-(i%5)))%5];
+          if(allowed(candidate))return candidate;
+        }
+        return top_pages[position];
+      };
+      if(allowed(page) && (page==1 || (page>=8 && page<=10))){
+        const int p[4]={1,8,9,10};
+        int pos=0;for(int i=0;i<4;i++)if(p[i]==page){pos=i;break;}
+        if(direction>0 && pos==3)id(select_page).execute(adjacent_top(1));
+        else if(direction<0 && pos==0)id(select_page).execute(adjacent_top(1));
+        else id(select_page).execute(p[pos+(direction>0?1:-1)]);
+      }else if(allowed(page) && page>=2 && page<=6){
+        if(direction>0 && page==6)id(select_page).execute(adjacent_top(2));
+        else if(direction<0 && page==2)id(select_page).execute(adjacent_top(2));
+        else id(select_page).execute(page+(direction>0?1:-1));
+      }else{
+        int pos=0;for(int i=0;i<5;i++)if(top_pages[i]==page){pos=i;break;}
+        id(select_page).execute(adjacent_top(pos));
+      }
+- id: select_page
+  mode: single
+  parameters:
+    target: int
+  then:
+  - lambda: |-
+      if (target < 0 || target > 11) return;
+      uint32_t required=target==11?16U:(target==0?1U:(target==1 || (target>=8 && target<=10)?2U:(target>=2 && target<=6?4U:8U)));
+      if(!(id(nav_visibility_mask)&required)){
+        ESP_LOGW("nav_gate", "Navigation zu ausgeblendetem Bereich blockiert: Seite %d",target);
+        return;
+      }
+      if (id(refresh_busy) || target == id(current_page)) return;
+      id(current_page) = target;
+      id(e1003_active_page).publish_state(std::to_string(target));
+      ESP_LOGI("data_gate", "Aktive Seite %d: HA-Datenpakete nur fuer geoeffnete Ansichten", target);
+      id(list_offset) = 0;
+      id(force_content)=true; id(refresh_display).execute();
+- id: elisa_refresh
+  mode: restart
+  then:
+  # Coalesce HA payload updates; retry dirty data after a busy display.
+  - delay: 500ms
+  - if:
+      condition:
+        lambda: |-
+          if(id(sd_photos).active() || id(current_page)!=11 || !id(initial_render_done) || id(refresh_busy))return false;
+          const auto t=id(ha_time).now();
+          const int64_t minute=t.is_valid()?int64_t(t.timestamp)/60:int64_t(millis()/60000UL);
+          return (id(dirty_pages)&(1U<<11)) || minute!=id(elisa_last_minute);
+      then:
+      - lambda: |-
+          const auto t=id(ha_time).now();
+          id(elisa_last_minute)=t.is_valid()?int64_t(t.timestamp)/60:int64_t(millis()/60000UL);
+          id(dirty_pages)|=(1U<<11);
+          id(elisa_partial_refresh)=true;
+      - script.execute: refresh_display
+- id: refresh_from_ha
+  mode: restart
+  then:
+  - if:
+      condition:
+        lambda: return !id(sd_photos).active() && !id(refresh_busy) && id(current_page)!=2 && ((id(dirty_pages)&(1U<<id(current_page))) || id(status_dirty));
+      then:
+      - script.execute: refresh_display
+- id: refresh_display
+  mode: single
+  then:
+  - if:
+      condition:
+        lambda: return !id(sd_photos).active() && !id(sd_photos).resume_requested();
+      then:
+      - wait_until:
+          condition:
+            lambda: return id(panel_refresh).idle();
+      - lambda: id(refresh_busy)=true;
+      - delay: 10ms
+      - lambda: |-
+          id(last_refresh_ms)=millis();
+          if(id(full_refresh_due)) ESP_LOGI("ui_refresh", "Displayupdate: FULL (Boot/Wakeup oder 60min)");
+          else if(id(home_partial_refresh)) ESP_LOGI("ui_refresh", "Displayupdate: PARTIAL Home");
+      # A whole-panel GC16 transfer alone does not reset unchanged black pixels.
+      # Clean first on navigation/forced redraws and periodic maintenance.
+      - if:
+          condition:
+            lambda: return id(force_content) || id(full_refresh_due) || !id(initial_render_done);
+          then:
+          - lambda: id(panel_refresh).clean();
+          - wait_until:
+              condition:
+                lambda: return id(panel_refresh).idle();
+      - it8951.update:
+          id: epaper
+          mode: GC16
+      - wait_until:
+          condition:
+            lambda: return id(panel_refresh).idle();
+      - lambda: |-
+          id(status_dirty)=false;
+          ESP_LOGD("home_timing", "Seite %d: component.update-Aufruf inklusive Renderer: %u ms", id(current_page), (unsigned)(millis()-id(last_refresh_ms)));
+          if (id(wake_display_ms) == 0) {
+            id(wake_display_ms) = millis();
+            ESP_LOGI("wake_history", "Erster Displayaufbau nach Wake fertig: %u ms", (unsigned) id(wake_display_ms));
+          }
+          id(refresh_busy)=false;
+          id(initial_render_done)=true;
+      - if:
+          condition:
+            lambda: return !id(wake_diag_published) && id(wake_api_ms) > 0 && id(wake_display_ms) > 0;
+          then:
+          - script.execute: publish_wake_diagnostics

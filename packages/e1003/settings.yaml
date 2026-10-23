@@ -1,0 +1,253 @@
+select:
+- platform: template
+  id: screensaver_interval
+  name: E1003 Screensaver Bildwechsel
+  entity_category: config
+  icon: mdi:timer-outline
+  optimistic: true
+  restore_value: true
+  initial_option: "15 Minuten"
+  options:
+    - "5 Minuten"
+    - "10 Minuten"
+    - "15 Minuten"
+    - "20 Minuten"
+    - "25 Minuten"
+    - "30 Minuten"
+    - "35 Minuten"
+    - "40 Minuten"
+    - "45 Minuten"
+    - "50 Minuten"
+    - "55 Minuten"
+    - "60 Minuten"
+  on_value:
+    then:
+    - lambda: esphome::global_preferences->sync();
+- platform: template
+  id: screensaver_start
+  name: E1003 Screensaver Start nach
+  entity_category: config
+  icon: mdi:timer-sand
+  optimistic: true
+  restore_value: true
+  initial_option: "5 Minuten"
+  options:
+    - "1 Minuten"
+    - "2 Minuten"
+    - "5 Minuten"
+    - "10 Minuten"
+    - "15 Minuten"
+    - "20 Minuten"
+    - "25 Minuten"
+    - "30 Minuten"
+    - "35 Minuten"
+    - "40 Minuten"
+    - "45 Minuten"
+    - "50 Minuten"
+    - "55 Minuten"
+    - "60 Minuten"
+  on_value:
+    then:
+    - lambda: esphome::global_preferences->sync();
+- platform: template
+  id: screensaver_source
+  name: E1003 Screensaver Darstellung
+  entity_category: config
+  icon: mdi:image-multiple
+  optimistic: true
+  restore_value: true
+  initial_option: "Bild"
+  options:
+    - "Bild"
+    - "Digitale Uhr"
+    - "Analoge Uhr"
+  on_value:
+    then:
+    - lambda: |-
+        esphome::global_preferences->sync();
+        if(id(sd_photos).active())id(screensaver_stop).execute();
+switch:
+- platform: template
+  id: screensaver_switch
+  name: E1003 Screensaver
+  entity_category: config
+  icon: mdi:image-multiple
+  restore_mode: DISABLED
+  lambda: return id(screensaver_enabled) && (id(screensaver_source).current_option()!="Bild" || id(sd_photos).ready());
+  turn_on_action:
+    - lambda: |-
+        if(!(id(screensaver_source).current_option()!="Bild" || id(sd_photos).ready())){
+          id(screensaver_switch).publish_state(false);
+          ESP_LOGW("sd_screensaver","Screensaver abgelehnt: keine lesbare SD-Karte");
+          return;
+        }
+        id(screensaver_enabled)=true;
+        screensaver_enabled->update();esphome::global_preferences->sync();
+        id(screensaver_switch).publish_state(true);
+        id(sd_photos).activity();
+    - script.execute: deep_sleep_idle
+  turn_off_action:
+    - lambda: |-
+        id(screensaver_enabled)=false;
+        screensaver_enabled->update();esphome::global_preferences->sync();
+        id(screensaver_switch).publish_state(false);
+    - script.execute: screensaver_stop
+    - script.execute: deep_sleep_idle
+- platform: template
+  id: deep_sleep_switch
+  name: E1003 Deep Sleep
+  icon: mdi:power-sleep
+  entity_category: config
+  optimistic: true
+  restore_mode: ${deep_sleep_default}
+  on_turn_on:
+    - deep_sleep.allow: deep_sleep_control
+    - logger.log:
+        tag: deep_sleep
+        level: INFO
+        format: "Deep Sleep EIN: Timeout ${deep_sleep_idle_timeout}, Wake-Timer ${deep_sleep_wakeup_interval}"
+    - script.execute: deep_sleep_idle
+  on_turn_off:
+    - deep_sleep.prevent: deep_sleep_control
+    - script.stop: deep_sleep_idle
+    - lambda: |-
+        id(deep_sleep_prepare_ok) = false;
+        if (id(sleep_indicator)) {
+          id(sleep_indicator) = false;
+          id(status_dirty) = true;
+        }
+        ESP_LOGI("deep_sleep", "Deep Sleep AUS: Inaktivitaets-Timer gestoppt; OTA/API bleiben erreichbar");
+- platform: template
+  id: nav_start
+  name: E1003 Navigation Start
+  icon: mdi:view-dashboard
+  entity_category: config
+  restore_mode: DISABLED  # State comes from restored nav_visibility_mask.
+  lambda: return (id(nav_visibility_mask) & 1U) != 0;
+  turn_on_action:
+  - lambda: |-
+      id(nav_visibility_mask) |= 1U;
+      id(nav_start).publish_state(true);
+      ESP_LOGI("nav_gate", "Navigation Start: EIN (Maske 0x%X)", (unsigned)id(nav_visibility_mask));
+  - script.execute: navigation_visibility_store
+  - script.execute: navigation_visibility_changed
+  turn_off_action:
+  - lambda: |-
+      id(nav_visibility_mask) &= ~1U;
+      if((id(nav_visibility_mask) & 0x1FU)==0U){
+        id(nav_visibility_mask) = 1U; // Keep Start reachable at all times.
+        id(nav_start).publish_state(true);
+        ESP_LOGW("nav_gate", "Alle Bereiche ausgeschaltet: Start automatisch aktiviert");
+      }
+      id(nav_start).publish_state((id(nav_visibility_mask) & 1U)!=0U);
+      ESP_LOGI("nav_gate", "Navigation Start: AUS (Maske 0x%X)", (unsigned)id(nav_visibility_mask));
+  - script.execute: navigation_visibility_store
+  - script.execute: navigation_visibility_changed
+- platform: template
+  id: nav_home
+  name: E1003 Navigation Home
+  icon: mdi:home-assistant
+  entity_category: config
+  restore_mode: DISABLED  # State comes from restored nav_visibility_mask.
+  lambda: return (id(nav_visibility_mask) & 2U) != 0;
+  turn_on_action:
+  - lambda: |-
+      id(nav_visibility_mask) |= 2U;
+      id(nav_home).publish_state(true);
+      ESP_LOGI("nav_gate", "Navigation Home: EIN (Maske 0x%X)", (unsigned)id(nav_visibility_mask));
+  - script.execute: navigation_visibility_store
+  - script.execute: navigation_visibility_changed
+  turn_off_action:
+  - lambda: |-
+      id(nav_visibility_mask) &= ~2U;
+      if((id(nav_visibility_mask) & 0x1FU)==0U){
+        id(nav_visibility_mask) = 1U; // Keep Start reachable at all times.
+        id(nav_start).publish_state(true);
+        ESP_LOGW("nav_gate", "Alle Bereiche ausgeschaltet: Start automatisch aktiviert");
+      }
+      id(nav_home).publish_state((id(nav_visibility_mask) & 2U)!=0U);
+      ESP_LOGI("nav_gate", "Navigation Home: AUS (Maske 0x%X)", (unsigned)id(nav_visibility_mask));
+  - script.execute: navigation_visibility_store
+  - script.execute: navigation_visibility_changed
+- platform: template
+  id: nav_maxim
+  name: E1003 Navigation Maxim
+  icon: mdi:account
+  entity_category: config
+  restore_mode: DISABLED  # State comes from restored nav_visibility_mask.
+  lambda: return (id(nav_visibility_mask) & 4U) != 0;
+  turn_on_action:
+  - lambda: |-
+      id(nav_visibility_mask) |= 4U;
+      id(nav_maxim).publish_state(true);
+      ESP_LOGI("nav_gate", "Navigation Maxim: EIN (Maske 0x%X)", (unsigned)id(nav_visibility_mask));
+  - script.execute: navigation_visibility_store
+  - script.execute: navigation_visibility_changed
+  turn_off_action:
+  - lambda: |-
+      id(nav_visibility_mask) &= ~4U;
+      if((id(nav_visibility_mask) & 0x1FU)==0U){
+        id(nav_visibility_mask) = 1U; // Keep Start reachable at all times.
+        id(nav_start).publish_state(true);
+        ESP_LOGW("nav_gate", "Alle Bereiche ausgeschaltet: Start automatisch aktiviert");
+      }
+      id(nav_maxim).publish_state((id(nav_visibility_mask) & 4U)!=0U);
+      ESP_LOGI("nav_gate", "Navigation Maxim: AUS (Maske 0x%X)", (unsigned)id(nav_visibility_mask));
+  - script.execute: navigation_visibility_store
+  - script.execute: navigation_visibility_changed
+- platform: template
+  id: nav_elisa
+  name: E1003 Navigation Elisa
+  icon: mdi:face-woman
+  entity_category: config
+  restore_mode: DISABLED  # Visibility comes from persisted nav_visibility_mask.
+  lambda: return (id(nav_visibility_mask) & 16U) != 0;
+  turn_on_action:
+  - lambda: |-
+      id(nav_visibility_mask) |= 16U;
+      id(nav_elisa).publish_state(true);
+      ESP_LOGI("nav_gate", "Navigation Elisa: EIN (Maske 0x%X)", (unsigned)id(nav_visibility_mask));
+  - script.execute: navigation_visibility_store
+  - script.execute: navigation_visibility_changed
+  turn_off_action:
+  - lambda: |-
+      id(nav_visibility_mask) &= ~16U;
+      if((id(nav_visibility_mask) & 0x1FU)==0U){
+        id(nav_visibility_mask) = 1U; // Keep Start reachable at all times.
+        id(nav_start).publish_state(true);
+        ESP_LOGW("nav_gate", "Alle Bereiche ausgeschaltet: Start automatisch aktiviert");
+      }
+      id(nav_elisa).publish_state((id(nav_visibility_mask) & 16U)!=0U);
+      ESP_LOGI("nav_gate", "Navigation Elisa: AUS (Maske 0x%X)", (unsigned)id(nav_visibility_mask));
+  - script.execute: navigation_visibility_store
+  - script.execute: navigation_visibility_changed
+- platform: template
+  id: nav_wetter
+  name: E1003 Navigation Wetter
+  icon: mdi:weather-partly-cloudy
+  entity_category: config
+  restore_mode: DISABLED  # State comes from restored nav_visibility_mask.
+  lambda: return (id(nav_visibility_mask) & 8U) != 0;
+  turn_on_action:
+  - lambda: |-
+      id(nav_visibility_mask) |= 8U;
+      id(nav_wetter).publish_state(true);
+      ESP_LOGI("nav_gate", "Navigation Wetter: EIN (Maske 0x%X)", (unsigned)id(nav_visibility_mask));
+  - script.execute: navigation_visibility_store
+  - script.execute: navigation_visibility_changed
+  turn_off_action:
+  - lambda: |-
+      id(nav_visibility_mask) &= ~8U;
+      if((id(nav_visibility_mask) & 0x1FU)==0U){
+        id(nav_visibility_mask) = 1U; // Keep Start reachable at all times.
+        id(nav_start).publish_state(true);
+        ESP_LOGW("nav_gate", "Alle Bereiche ausgeschaltet: Start automatisch aktiviert");
+      }
+      id(nav_wetter).publish_state((id(nav_visibility_mask) & 8U)!=0U);
+      ESP_LOGI("nav_gate", "Navigation Wetter: AUS (Maske 0x%X)", (unsigned)id(nav_visibility_mask));
+  - script.execute: navigation_visibility_store
+  - script.execute: navigation_visibility_changed
+output:
+- platform: gpio
+  pin: GPIO40
+  id: bsp_battery_enable

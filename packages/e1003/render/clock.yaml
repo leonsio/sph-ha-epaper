@@ -1,0 +1,88 @@
+|
+  if(id(sd_photos).active()){
+  if(id(screensaver_source).current_option()=="Bild"){
+    id(sd_photos).render();
+    return;
+  }
+  const int W=it.get_width(), H=it.get_height();
+  const Color ink=Color::BLACK, paper=Color::WHITE;
+  auto now=id(ha_time).now();
+  if(!now.is_valid()){
+    it.fill(paper);
+    it.print(W/2,H/2,id(font_weather_condition),ink,TextAlign::CENTER,"Uhrzeit wird synchronisiert");
+    return;
+  }
+  const bool analog=id(screensaver_source).current_option()=="Analoge Uhr";
+  static const char *days[]={"", "Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"};
+  
+  auto weather_text=[&]()->const char *{
+    const std::string condition=id(epaper_weather_condition).state;
+    if(condition=="sunny")return "Sonnig";
+    if(condition=="clear-night")return "Klare Nacht";
+    if(condition=="partlycloudy")return "Teilweise bewölkt";
+    if(condition=="cloudy")return "Bewölkt";
+    if(condition=="fog")return "Nebel";
+    if(condition=="rainy")return "Regen";
+    if(condition=="pouring")return "Starker Regen";
+    if(condition=="snowy")return "Schnee";
+    if(condition=="snowy-rainy")return "Schneeregen";
+    if(condition=="hail")return "Hagel";
+    if(condition=="lightning" || condition=="lightning-rainy")return "Gewitter";
+    if(condition=="windy" || condition=="windy-variant")return "Windig";
+    if(condition=="exceptional")return "Außergewöhnlich";
+    return "Wetter nicht verfügbar";
+  };
+  auto draw_footer=[&](){
+    it.printf(W/2,H-155,id(font_weather_condition),ink,TextAlign::CENTER,"%s, %02d.%02d.%04d",
+              days[now.day_of_week],now.day_of_month,now.month,now.year);
+    const std::string raw=id(weather_outdoor_temperature).state;
+    char *end=nullptr;float temperature=strtof(raw.c_str(),&end);
+    if(end!=raw.c_str() && std::isfinite(temperature))
+      it.printf(W/2,H-65,id(font_weather_condition),ink,TextAlign::CENTER,"%s · %.1f °C",weather_text(),temperature);
+    else it.printf(W/2,H-65,id(font_weather_condition),ink,TextAlign::CENTER,"%s · -- °C",weather_text());
+  };
+  auto analog_hand=[&](int hour,int minute,int length,int width,bool minute_hand,Color color){
+    const int cx=W/2, cy=(H-190)/2;
+    const double tick=minute_hand ? double(minute) : (hour%12)*5+minute/12.0;
+    const double a=tick*3.141592653589793/30.0-3.141592653589793/2;
+    const int ex=cx+int(length*cos(a)),ey=cy+int(length*sin(a));
+    const int dx=int(width*sin(a)),dy=-int(width*cos(a));
+    it.filled_triangle(cx+dx,cy+dy,cx-dx,cy-dy,ex,ey,color);
+  };
+  auto digital_geometry=[&](int centers[5],int &cell_w,int &cell_h,int &cy){
+    int bx=0,by=0,bw=0,bh=0;
+    it.get_text_bounds(0,0,"88:88",id(font_screensaver_clock),TextAlign::TOP_LEFT,&bx,&by,&bw,&bh);
+    const int slot=std::max(1,bw/5);
+    cy=(H-190)/2;
+    centers[0]=W/2-2*slot;centers[1]=W/2-slot;centers[2]=W/2;
+    centers[3]=W/2+slot;centers[4]=W/2+2*slot;
+    cell_w=slot+24;cell_h=bh+34;
+  };
+  
+  {
+    it.fill(paper);
+    if(analog){
+      const int cx=W/2, cy=(H-190)/2, r=std::min(W/2-30,cy-20);
+      it.circle(cx,cy,r,ink);
+      for(int m=0;m<60;m++){
+        const double a=m*3.141592653589793/30.0-3.141592653589793/2;
+        const int inner=r-(m%5==0?42:17);
+        for(int offset=-1;offset<=1;offset++)
+          it.line(cx+int(inner*cos(a))+offset,cy+int(inner*sin(a)),cx+int((r-8)*cos(a))+offset,cy+int((r-8)*sin(a)),ink);
+        if(m%5==0)it.printf(cx+int((r-85)*cos(a)),cy+int((r-85)*sin(a)),id(font_start_weather),ink,TextAlign::CENTER,"%d",m==0?12:m/5);
+      }
+      analog_hand(now.hour,now.minute,int(r*0.55),18,false,ink);
+      analog_hand(now.hour,now.minute,int(r*0.79),11,true,ink);
+      it.filled_circle(cx,cy,24,ink);
+    }else{
+      int centers[5],cell_w=0,cell_h=0,cy=0;
+      digital_geometry(centers,cell_w,cell_h,cy);
+      char digits[5];snprintf(digits,sizeof(digits),"%02d%02d",now.hour,now.minute);
+      const int slots[4]={0,1,3,4};
+      for(int i=0;i<4;i++)it.printf(centers[slots[i]],cy,id(font_screensaver_clock),ink,TextAlign::CENTER,"%c",digits[i]);
+      it.print(centers[2],cy,id(font_screensaver_clock),ink,TextAlign::CENTER,":");
+    }
+    draw_footer();
+    return;
+  }
+  }

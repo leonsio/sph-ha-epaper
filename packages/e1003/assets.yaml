@@ -1,0 +1,396 @@
+image:
+  # True 1-bit alpha masks; the letter/leaf is transparent against the white card.
+  - platform: file
+    file: icons/waste_rest.png
+    id: waste_rest
+    type: BINARY
+    transparency: chroma_key
+  - platform: file
+    file: icons/waste_bio.png
+    id: waste_bio
+    type: BINARY
+    transparency: chroma_key
+  - platform: file
+    file: icons/waste_papier.png
+    id: waste_papier
+    type: BINARY
+    transparency: chroma_key
+  - platform: file
+    file: icons/waste_gelb.png
+    id: waste_gelb
+    type: BINARY
+    transparency: chroma_key
+  - platform: file
+    file: icons/waste_gruen.png
+    id: waste_gruen
+    type: BINARY
+    transparency: chroma_key
+font:
+- file: fonts/NotoSansMono-ExtraBold.ttf
+  id: font_screensaver_clock
+  size: 500
+  glyphs: "0123456789:"
+- file: fonts/MaterialDesignIconsDesktop.ttf
+  id: mdi_start
+  size: 42
+  glyphs:
+  - "\U000F01F3"
+  - "\U000F04B8"
+  - "\U000F0004"
+  - "\U000F072A"
+  - "\U000F0917"
+  - "\U000F0AAC" # dishwasher
+  - "\U000F1903"
+  - "\U000F0A72"
+  - "\U000F0238"
+  - "\U000F058C"
+  - "\U000F0079"
+  - "\U000F06E8"
+  - "\U000F0A7A"
+  - "\U000F02E3"
+  - "\U000F04B9"
+  - "\U000F0821"
+  - "\U000F09A1"
+  - "\U000F181C"
+  - "\U000F1510"
+  - "\U000F02DC"
+  - "\U000F0599"
+  - "\U000F0594"
+  - "\U000F0595"
+  - "\U000F0590"
+  - "\U000F0591"
+  - "\U000F0592"
+  - "\U000F0593"
+  - "\U000F067E"
+  - "\U000F0596"
+  - "\U000F0597"
+  - "\U000F0598"
+  - "\U000F067F"
+  - "\U000F059D"
+  - "\U000F059E"
+  - "\U000F0F38"
+  - "\U000F044C" # recycle: Gelbe Säcke
+  - "\U000F0816" # clover: Grünabfall
+  - "\U000F185E" # radioactive-circle-outline: Bioabfall
+  - "\U000F039B" # note-outline: Papiertonne
+  - "\U000F0B88" # delete-circle-outline: Restmülltonne
+  - "\U000F111C" # window shutter / contacts
+  - "\U000F033E" # lock
+  - "\U000F0335" # lightbulb
+  - "\U000F0110" # shopping cart
+- file: fonts/MaterialDesignIconsDesktop.ttf
+  id: mdi_start_person
+  size: 80
+  glyphs:
+  - "\U000F1077" # face-woman: Elisa
+  - "\U000F1A20" # account-school: Julia
+  - "\U000F01F3"
+  - "\U000F04B8"
+  - "\U000F0004"
+  - "\U000F072A"
+  - "\U000F0917"
+  - "\U000F1903"
+  - "\U000F0A72"
+  - "\U000F0238"
+  - "\U000F058C"
+  - "\U000F0079"
+  - "\U000F06E8"
+  - "\U000F0A7A"
+  - "\U000F02E3"
+  - "\U000F04B9"
+  - "\U000F0821"
+  - "\U000F09A1"
+  - "\U000F181C"
+  - "\U000F1510"
+  - "\U000F02DC"
+  - "\U000F0599"
+  - "\U000F0594"
+  - "\U000F0595"
+  - "\U000F0590"
+  - "\U000F0591"
+  - "\U000F0592"
+  - "\U000F0593"
+  - "\U000F067E"
+  - "\U000F0596"
+  - "\U000F0597"
+  - "\U000F0598"
+  - "\U000F067F"
+  - "\U000F059D"
+  - "\U000F059E"
+  - "\U000F0F38"
+- file: fonts/MaterialDesignIconsDesktop.ttf
+  id: mdi_start_appliance
+  size: 64
+  glyphs:
+  - "\U000F01F3"
+  - "\U000F04B8"
+  - "\U000F0004"
+  - "\U000F072A"
+  - "\U000F0917"
+  - "\U000F1903"
+  - "\U000F0A72"
+  - "\U000F0238"
+  - "\U000F058C"
+  - "\U000F0079"
+  - "\U000F06E8"
+  - "\U000F0A7A"
+  - "\U000F02E3"
+  - "\U000F04B9"
+  - "\U000F0821"
+  - "\U000F09A1"
+  - "\U000F181C"
+  - "\U000F1510"
+  - "\U000F02DC"
+  - "\U000F0599"
+  - "\U000F0594"
+  - "\U000F0595"
+  - "\U000F0590"
+  - "\U000F0591"
+  - "\U000F0592"
+  - "\U000F0593"
+  - "\U000F067E"
+  - "\U000F0596"
+  - "\U000F0597"
+  - "\U000F0598"
+  - "\U000F067F"
+  - "\U000F059D"
+  - "\U000F059E"
+  - "\U000F0F38"
+- file: fonts/MaterialDesignIconsDesktop.ttf
+  id: mdi_home
+  size: 42
+  glyphs:
+  - "\U000F02DC" # home
+  - "\U000F07D0" # Home Assistant logo (main navigation)
+  - "\U000F0595" # weather partly cloudy (main navigation)
+  - "\U000F0599" # weather sunny
+  - "\U000F0594" # weather clear night
+  - "\U000F0590" # weather cloudy
+  - "\U000F0591" # weather fog
+  - "\U000F0592" # weather hail
+  - "\U000F0593" # weather lightning
+  - "\U000F067E" # weather lightning-rainy
+  - "\U000F0596" # weather pouring
+  - "\U000F0597" # weather rainy
+  - "\U000F0598" # weather snowy
+  - "\U000F067F" # weather snowy-rainy
+  - "\U000F059D" # weather windy
+  - "\U000F059E" # weather windy-variant
+  - "\U000F0F38" # weather exceptional
+  - "\U000F056E" # view-dashboard: Start (main navigation)
+  - "\U000F0643" # face-man: Maxim (main navigation)
+  - "\U000F1077" # face-woman: Elisa (main navigation)
+  - "\U000F0335" # lightbulb
+  - "\U000F111C" # window-shutter
+  - "\U000F0438" # radiator
+  - "\U000F005D" # arrow-up
+  - "\U000F0045" # arrow-down
+  - "\U000F04DB" # stop
+  - "\U000F0425" # power
+  - "\U000F0374" # minus
+  - "\U000F0415" # plus
+  - "\U000F06A9" # auto-fix
+  - "\U000F07C7" # storefront (Markise)
+- file: fonts/MaterialDesignIconsDesktop.ttf
+  id: mdi_energy
+  size: 58
+  glyphs:
+  - "\U000F0A72" # solar-power
+  - "\U000F0595" # weather-partly-cloudy (PV < 0.1 kWh)
+  - "\U000F0D3E" # transmission-tower
+  - "\U000F02DC" # home
+  - "\U000F0084" # battery-charging (active charge)
+  - "\U000F0079" # battery (not charging)
+  - "\U000F058C" # water
+  - "\U000F0238" # fire
+- file: fonts/MaterialDesignIconsDesktop.ttf
+  id: mdi_rooms
+  size: 62
+  glyphs:
+  - "\U000F0F91" # wardrobe-outline (Ankleide)
+  - "\U000F0F90" # wardrobe (Kleiderschrank)
+  - "\U000F1818" # bathtub (Bad Dachgeschoss)
+  - "\U000F09A1" # shower-head (Bad Obergeschoss)
+  - "\U000F02E3" # bed (Zimmer)
+  - "\U000F1817" # balcony
+  - "\U000F0821" # floor-plan (Flur)
+  - "\U000F1510" # grass (Garten)
+  - "\U000F181C" # countertop (Kueche)
+  - "\U000F04B9" # sofa (Wohnzimmer)
+  - "\U000F072A" # washing-machine (Waschraum)
+  - "\U000F0D81" # home-floor-2 (Dachgeschoss)
+  - "\U000F0D80" # home-floor-1 (Obergeschoss)
+  - "\U000F0DD2" # home-floor-0 (Erdgeschoss)
+  - "\U000F0DD3" # home-floor-negative-1 (Untergeschoss)
+  - "\U000F02DC" # home (andere Etagen/unknown)
+- file: fonts/MaterialDesignIconsDesktop.ttf
+  id: mdi_room_floors
+  size: 40
+  glyphs:
+  - "\U000F0D81" # home-floor-2 (Dachgeschoss)
+  - "\U000F0D80" # home-floor-1 (Obergeschoss)
+  - "\U000F0DD2" # home-floor-0 (Erdgeschoss)
+  - "\U000F0DD3" # home-floor-negative-1 (Untergeschoss)
+  - "\U000F02DC" # home (andere Etagen/unknown)
+- file: gfonts://Inter@700
+  id: font_day
+  size: 42
+  glyphsets:
+  - GF_Latin_Core
+  ignore_missing_glyphs: true
+  glyphs: ["³"]
+- file: gfonts://Inter@700
+  id: font_lesson
+  size: 35
+  glyphsets:
+  - GF_Latin_Core
+  ignore_missing_glyphs: true
+  glyphs: ["³"]
+- file: gfonts://Inter@700
+  id: font_small
+  size: 28
+  glyphsets:
+  - GF_Latin_Core
+  ignore_missing_glyphs: true
+  glyphs: ["³"]
+- file: gfonts://Inter@700
+  id: font_meta
+  size: 23
+  glyphsets:
+  - GF_Latin_Core
+  ignore_missing_glyphs: true
+  glyphs: ["³"]
+- file: gfonts://Inter@700
+  id: font_start_date
+  size: 51
+  glyphsets:
+  - GF_Latin_Core
+  ignore_missing_glyphs: true
+  glyphs: ["³"]
+- file: gfonts://Inter@700
+  id: font_start_info
+  size: 47
+  glyphsets:
+  - GF_Latin_Core
+  ignore_missing_glyphs: true
+  glyphs: ["³"]
+- file: fonts/NotoSansMono-ExtraBold.ttf
+  id: font_maxim_clock
+  size: 276
+  glyphs: "0123456789:"
+  ignore_missing_glyphs: true
+- file: gfonts://Inter@700
+  id: font_weather_condition
+  size: 56
+  glyphsets:
+  - GF_Latin_Core
+  ignore_missing_glyphs: true
+  glyphs: ["³"]
+- file: gfonts://Inter@700
+  id: font_start_weather
+  size: 89
+  glyphsets:
+  - GF_Latin_Core
+  ignore_missing_glyphs: true
+  glyphs: ["³"]
+- file: gfonts://Inter@700
+  id: font_weather_current_temp
+  size: 225
+  glyphsets:
+  - GF_Latin_Core
+  ignore_missing_glyphs: true
+  glyphs: ["³"]
+- file: fonts/MaterialDesignIconsDesktop.ttf
+  id: mdi_weather_xlarge
+  size: 309
+  glyphs:
+  - 󰖐
+  - 󰖑
+  - 󰖒
+  - 󰖓
+  - 󰙾
+  - 󰖔
+  - 󰖕
+  - 󰖖
+  - 󰖗
+  - 󰖘
+  - 󰙿
+  - 󰖙
+  - 󰖝
+  - 󰖞
+  - 󰼸
+  - 󰖛
+  - 󰖜
+- file: fonts/MaterialDesignIconsDesktop.ttf
+  id: mdi_weather_medium
+  size: 112
+  glyphs: &id001
+  - 󰖐
+  - 󰖑
+  - 󰖒
+  - 󰖓
+  - 󰙾
+  - 󰖔
+  - 󰖕
+  - 󰖖
+  - 󰖗
+  - 󰖘
+  - 󰙿
+  - 󰖙
+  - 󰖛
+  - 󰖜
+  - 󰖝
+  - 󰖞
+  - 󰼸
+- file: fonts/MaterialDesignIconsDesktop.ttf
+  id: mdi_weather_hourly
+  size: 89
+  glyphs: *id001
+- file: fonts/MaterialDesignIconsDesktop.ttf
+  id: mdi_weather_small
+  size: 60
+  glyphs: *id001
+- file: fonts/MaterialDesignIconsDesktop.ttf
+  id: mdi_sun_info
+  size: 51
+  glyphs:
+  - 󰖛
+  - 󰖜
+- file: fonts/MaterialDesignIconsDesktop.ttf
+  id: mdi_status
+  size: 42
+  glyphs:
+  - "\U000F04B2"  # sleep
+- file: gfonts://Inter@700
+  id: ui_title
+  size: 40
+  glyphsets:
+  - GF_Latin_Core
+  ignore_missing_glyphs: true
+  glyphs: ["³"]
+- file: gfonts://Inter@400
+  id: ui_body
+  size: 30
+  glyphsets:
+  - GF_Latin_Core
+  ignore_missing_glyphs: true
+  glyphs: ["³"]
+- file: gfonts://Inter@400
+  id: ui_small
+  size: 24
+  glyphsets:
+  - GF_Latin_Core
+  glyphs:
+  - "\u2190" # Pfeil links: Netz-Einspeisung
+  - "\u2192" # Pfeil rechts: Netzbezug
+  - "\u2193" # Pfeil unten: Batterieentladung
+  - "\u2191" # Pfeil oben: Batterieladung
+  - "\u00B3" # Kubikmeter Gas/Wasser
+  ignore_missing_glyphs: true
+- file: gfonts://Inter@700
+  id: ui_tab
+  size: 29
+  glyphsets:
+  - GF_Latin_Core
+  ignore_missing_glyphs: true
+  glyphs: ["³"]

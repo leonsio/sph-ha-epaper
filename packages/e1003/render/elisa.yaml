@@ -1,0 +1,50 @@
+|
+  if(id(current_page)==11){
+    fast_rect(12,CONTENT_TOP,W-24,H-CONTENT_TOP,PAPER);
+    text(30,CONTENT_TOP+16,"Nieder-Eschbach",id(ui_title),INK,W-60);
+    text(30,CONTENT_TOP+80,"RMV · Nächste Abfahrten",id(ui_body),INK,W-60);
+    auto doc=esphome::json::parse_json(id(elisa_rmv_json).state.empty()?"{}":id(elisa_rmv_json).state);
+    const bool valid=!doc.isNull() && !doc.overflowed() && doc["departures"].is<JsonArray>();
+    const bool available=valid && (doc["available"] | false);
+    const int header_y=CONTENT_TOP+160, first_y=header_y+65;
+    const int line_x=40, destination_x=250, time_x=W-420, minutes_x=W-205;
+    text(line_x,header_y,"Linie",id(ui_body),INK,190);
+    text(destination_x,header_y,"Richtung",id(ui_body),INK,time_x-destination_x-25);
+    text(time_x,header_y,"Abfahrt",id(ui_body),INK,195);
+    text(minutes_x,header_y,"In",id(ui_body),INK,170);
+    it.line(30,header_y+51,W-30,header_y+51,INK);
+    const int row_h=132, capacity=std::max(1,(H-first_y-110)/row_h);
+    int shown=0;
+    if(available){
+      JsonArray departures=doc["departures"].as<JsonArray>();
+      for(JsonObject dep:departures){
+        const int64_t epoch=dep["epoch"].as<int64_t>();
+        const int64_t delta=epoch-int64_t(now.timestamp);
+        if(now.is_valid() && delta < -59)continue;
+        if(shown>=capacity)break;
+        const int y=first_y+shown*row_h;
+        std::string destination=dep["direction"] | "";
+        const std::string prefix="Frankfurt (Main) ";
+        if(destination.compare(0,prefix.size(),prefix)==0)destination.erase(0,prefix.size());
+        text(line_x,y+14,dep["line"] | "?",id(ui_title),INK,190);
+        text(line_x,y+76,dep["product"] | "",id(ui_small),INK,190);
+        auto target_lines=lines(destination,id(ui_body),time_x-destination_x-30);
+        for(size_t i=0;i<target_lines.size() && i<2;i++)
+          text(destination_x,y+21+int(i)*42,target_lines[i],id(ui_body),INK,time_x-destination_x-30);
+        text(time_x,y+20,dep["time"] | "--:--",id(ui_title),INK,195);
+        const int remaining=now.is_valid()?int(std::max<int64_t>(0,(delta+59)/60)):(dep["minutes"] | 0);
+        const std::string countdown=remaining==0?"jetzt":std::to_string(remaining)+" min";
+        text(minutes_x,y+24,countdown,id(ui_body),INK,170);
+        it.line(30,y+row_h-5,W-30,y+row_h-5,INK);
+        shown++;
+      }
+    }
+    if(shown==0)text(40,first_y+45,available?"Keine kommenden Abfahrten gemeldet.":"RMV-Daten nicht verfügbar.",id(ui_body),INK,W-80);
+    std::string footer="Daten: opendata.rmv.de";
+    if(valid){
+      footer+=" | Stand: "+std::string(doc["updated"] | "--:--");
+      if(doc["stale"] | false)footer+=" | Daten möglicherweise veraltet";
+    }else footer+=" | Home-Assistant-Paket prüfen";
+    text(30,H-67,footer,id(ui_small),INK,W-60);
+    return;
+  }

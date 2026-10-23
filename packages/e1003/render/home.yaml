@@ -1,0 +1,668 @@
+|
+  if(id(current_page)==8) {
+    const uint32_t home_begin=millis();
+    struct HomeTiming {
+      uint32_t started;
+      ~HomeTiming(){ESP_LOGD("home_timing","Home: Seitenaufbau gesamt: %u ms (ohne anschließenden Panel-Refresh)",(unsigned)(millis()-started));}
+    } home_timing{render_start};
+    auto l=epaper_home::Layout{W,H};
+    l.top=184; // floor headers/room tiles start directly below Home submenu
+    const int DEVICE_TOP=250; // keep title/message above five device cards
+    const int DEVICE_ROWS=std::max(1,(H-DEVICE_TOP-95)/l.card_h);
+    const int PAGER_TOP=H-98;
+    auto doc=esphome::json::parse_json(id(home_rooms_json).state);
+    if(doc.isNull() || doc.overflowed() || !doc["rooms"].is<JsonArray>()) {
+      if(home_partial){
+        fast_rect(12,CONTENT_TOP,W-24,H-CONTENT_TOP,PAPER);
+        it.rectangle(12,CONTENT_TOP,W-24,H-CONTENT_TOP,PAPER);
+      }
+      id(home_render_json)="{}";
+      text(28,CONTENT_TOP+28,"Raumdaten fehlen – Home-Assistant-Paket einrichten.",id(font_day),INK,W-56);
+      text(28,CONTENT_TOP+95,"Erwartet: ${home_rooms_entity} / Attribut payload",id(font_small),INK,W-56);
+      return;
+    }
+    ESP_LOGD("home_timing","Home: JSON-Auswertung: %u ms, %u Bytes",(unsigned)(millis()-home_begin),(unsigned)id(home_rooms_json).state.size());
+    const uint32_t home_navigation_begin=millis();
+    auto old_doc=esphome::json::parse_json(id(home_render_json));
+    JsonArray old_rooms=old_doc["rooms"].as<JsonArray>();
+    JsonArray rooms=doc["rooms"].as<JsonArray>();
+    // The sensor's rooms[] objects accept floor/floor_name/etage/f.
+    // Preserve their original relative order inside each HA floor group.
+    auto room_floor=[](JsonObject r)->std::string {
+      std::string floor=r["floor"] | "";
+      if(floor.empty())floor=r["floor_name"] | "";
+      if(floor.empty())floor=r["etage"] | "";
+      if(floor.empty())floor=r["f"] | "";
+      return floor.empty()?std::string("Ohne Etage"):floor;
+    };
+    auto &order=id(home_room_order);
+    auto &floors=id(home_room_floors);
+    order.clear();floors.clear();
+    std::vector<std::string> floor_names;
+    bool unassigned=false;
+    for(int i=0;i<(int)rooms.size();i++){
+      JsonObject r=rooms[i].as<JsonObject>();
+      JsonArray room_devices=r["entities"].as<JsonArray>();
+      if(room_devices.isNull() || room_devices.size()==0)continue;
+      order.push_back(i);
+      const std::string floor=room_floor(r);
+      if(floor=="Ohne Etage")unassigned=true;
+      else if(std::find(floor_names.begin(),floor_names.end(),floor)==floor_names.end())floor_names.push_back(floor);
+    }
+    if(unassigned)floor_names.push_back("Ohne Etage");
+    // Physical top-to-bottom order (same as HA Floors dashboard).
+    auto floor_rank=[](const std::string &f)->int {
+      if(f=="Dachgeschoss" || f=="Dachgeschoß")return 0;
+      if(f=="Obergeschoss" || f=="Obergeschoß")return 1;
+      if(f=="Erdgeschoss" || f=="Erdgeschoß")return 2;
+      if(f=="Untergeschoss" || f=="Untergeschoß" || f=="Kellergeschoss")return 3;
+      if(f=="Ohne Etage")return 99;
+      return 50;
+    };
+    std::stable_sort(order.begin(),order.end(),[&](int a,int b){
+      const auto fa=room_floor(rooms[a].as<JsonObject>()),fb=room_floor(rooms[b].as<JsonObject>());
+      const int ra=floor_rank(fa),rb=floor_rank(fb);
+      if(ra!=rb)return ra<rb;
+      if(fa!=fb)return fa<fb;
+      std::string na=rooms[a]["n"] | "",nb=rooms[b]["n"] | "";
+      return na<nb;
+    });
+    for(int i:order)floors.push_back(room_floor(rooms[i].as<JsonObject>()));
+    JsonObject selected;
+    for(int i:order){
+      JsonObject r=rooms[i].as<JsonObject>();
+      if(r["id"].as<std::string>()==id(home_selected_room)){selected=r;break;}
+    }
+    if(selected.isNull()){
+      if(!order.empty())selected=rooms[order.front()].as<JsonObject>();
+      id(home_selected_room)=selected.isNull()?std::string(""):selected["id"].as<std::string>();
+      id(home_device_offset)=0;
+    }
+    // Room list never paginates: keep the old offset neutral for compatibility.
+    id(home_room_offset)=0;
+    std::string sidebar_signature;
+    for(size_t pos=0;pos<order.size();pos++){
+      JsonObject r=rooms[order[pos]].as<JsonObject>();
+      sidebar_signature+=floors[pos]+"\x1f"+r["id"].as<std::string>()+"\x1f"+r["n"].as<std::string>()+"\x1e";
+    }
+    const bool room_selection_changed=painted_home_room!=id(home_selected_room);
+    const bool sidebar_changed=!home_partial || room_selection_changed ||
+        painted_home_room_offset!=id(home_room_offset) ||
+        painted_home_sidebar_signature!=sidebar_signature;
+    if(sidebar_changed){
+      if(home_partial){
+        fast_rect(12,CONTENT_TOP,l.sidebar-24,H-CONTENT_TOP,PAPER);
+        it.rectangle(12,CONTENT_TOP,l.sidebar-24,H-CONTENT_TOP,PAPER); // mark cleared pixels dirty
+      }
+      // No redundant "Räume" heading: Home subnavigation occupies this band.
+      it.line(l.sidebar+8,CONTENT_TOP,l.sidebar+8,H-20,MID);
+      const int shown=(int)order.size();
+      const int room_bottom=H-20;
+      const int header_h=36;
+      int headings=0;
+      for(int row=0;row<shown;row++)
+        if(row==0 || floors[row]!=floors[row-1])headings++;
+      const int room_space=std::max(0,room_bottom-l.top-headings*header_h);
+      int y=l.top;
+      for(int row=0;row<shown;row++){
+        JsonObject r=rooms[order[row]].as<JsonObject>();
+        if(row==0 || floors[row]!=floors[row-1]){
+          fast_rect(12,y,l.sidebar-24,header_h-3,PAPER);
+          text(22,y+3,floors[row],id(font_small),INK,l.sidebar-45);
+          it.line(15,y+header_h-3,l.sidebar-15,y+header_h-3,MID);
+          y+=header_h;
+        }
+        const int tile_span=(row+1)*room_space/shown-row*room_space/shown;
+        const int height=std::max(1,tile_span-4);
+        const bool active=r["id"].as<std::string>()==id(home_selected_room);
+        fast_rect(12,y,l.sidebar-24,height,active?INK:PAPER);
+        it.rectangle(12,y,l.sidebar-24,height,active?INK:PAPER);
+        center(l.sidebar/2,y+height/2,r["n"] | "Raum",id(font_small),active?PAPER:INK);
+        y+=tile_span;
+      }
+      if(order.empty())text(25,l.top+30,"Keine steuerbaren Räume vorhanden.",id(font_small),INK,l.sidebar-48);
+      ESP_LOGI("home_ui","Raumraster EINSEITIG: %u Raeume, %d Etagen, %dpx Gesamtraum, min. %dpx/Kachel",
+               (unsigned)shown,headings,room_space,shown?room_space/shown:0);
+    }
+    auto pager=[&](int x,int w,bool prev,bool next){
+      const int pager_h=H-PAGER_TOP-2;
+      fast_rect(x,PAGER_TOP,w/2-8,pager_h,prev?LIGHT:PAPER);
+      fast_rect(x+w/2,PAGER_TOP,w/2-8,pager_h,next?LIGHT:PAPER);
+      it.rectangle(x,PAGER_TOP,w/2-8,pager_h,MID);
+      it.rectangle(x+w/2,PAGER_TOP,w/2-8,pager_h,MID);
+      center(x+w/4,PAGER_TOP+pager_h/2,"Zurück",id(font_small),prev?INK:MID);
+      center(x+3*w/4,PAGER_TOP+pager_h/2,"Weiter",id(font_small),next?INK:MID);
+    };
+    JsonArray devices=selected["entities"].as<JsonArray>();
+    // Display rows: pair matching light/cover names containing the standalone
+    // words Links and Rechts. No pairing across different device types or
+    // different name stems (for example "Licht - Links" / "Licht - Rechts").
+    auto build_device_rows=[](JsonArray all)->std::vector<std::pair<int,int>> {
+      std::vector<std::pair<int,int>> result;
+      std::vector<bool> used(all.size(),false);
+      auto pair_name=[](JsonObject e)->std::pair<int,std::string> {
+        std::string domain=e["d"] | "";
+        if(domain!="light" && domain!="cover")return {0,""};
+        std::string name=e["n"] | "";
+        std::string token,stem;
+        int side=0;
+        auto flush=[&](){
+          if(token.empty())return;
+          if(token=="links" || token=="rechts"){
+            const int found=token=="links"?1:2;
+            side=(side==0 || side==found)?found:3;
+          }else{
+            if(!stem.empty())stem+=" ";
+            stem+=token;
+          }
+          token.clear();
+        };
+        for(unsigned char c:name){
+          if((c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9'))
+            token+=(char)std::tolower(c);
+          else flush();
+        }
+        flush();
+        return (side==1 || side==2)?std::make_pair(side,domain+"|"+stem):std::make_pair(0,std::string());
+      };
+      for(int i=0;i<(int)all.size();i++){
+        if(used[i])continue;
+        used[i]=true;
+        JsonObject e=all[i].as<JsonObject>();
+        auto current=pair_name(e);
+        bool found=false;
+        if(current.first>0)for(int j=i+1;j<(int)all.size();j++){
+          if(used[j])continue;
+          JsonObject other=all[j].as<JsonObject>();
+          auto candidate=pair_name(other);
+          if(candidate.second==current.second && candidate.first>0 && candidate.first!=current.first){
+            used[j]=true;
+            result.emplace_back(current.first==1?i:j,current.first==1?j:i);
+            found=true;
+            break;
+          }
+        }
+        if(!found)result.emplace_back(i,-1);
+      }
+      return result;
+    };
+    const auto slots=build_device_rows(devices);
+    int last=slots.empty()?0:(((int)slots.size()-1)/DEVICE_ROWS)*DEVICE_ROWS;
+    id(home_device_offset)=std::max(0,std::min(id(home_device_offset),last));
+    JsonObject old_selected;
+    for(JsonObject r:old_rooms)
+      if(r["id"].as<std::string>()==id(home_selected_room)){old_selected=r;break;}
+    JsonArray old_devices=old_selected["entities"].as<JsonArray>();
+    const auto old_slots=build_device_rows(old_devices);
+    const int old_last=old_slots.empty()?0:(((int)old_slots.size()-1)/DEVICE_ROWS)*DEVICE_ROWS;
+    const bool right_changed=!home_partial || room_selection_changed ||
+        painted_home_device_offset!=id(home_device_offset) || old_rooms.isNull() ||
+        slots!=old_slots;
+    // If a room or grouping changes, repaint the right pane once. On a simple
+    // device-state change the partial renderer redraws only the affected row.
+    if(home_partial && right_changed){
+      fast_rect(l.right()-4,CONTENT_TOP,W-l.right()+4,H-CONTENT_TOP,PAPER);
+      it.rectangle(l.right()-4,CONTENT_TOP,W-l.right()+4,H-CONTENT_TOP,PAPER);
+    }
+    if(right_changed){
+      text(l.right(),CONTENT_TOP+6,selected["n"] | "Keine Räume konfiguriert",id(font_day),INK,l.card_width()/2-24);
+    }
+    if(right_changed || painted_home_message!=id(home_message)){
+      const int message_w=l.card_width()/2;
+      const int message_x=l.right()+l.card_width()-message_w;
+      fast_rect(message_x,CONTENT_TOP+6,message_w,80,PAPER);
+      auto message_lines=lines(id(home_message),id(font_meta),message_w-8);
+      for(size_t i=0;i<message_lines.size() && i<2;i++) {
+        const int x=l.right()+l.card_width()-width(message_lines[i],id(font_meta));
+        text(x,CONTENT_TOP+12+int(i)*30,message_lines[i],id(font_meta),INK,message_w);
+      }
+    }
+    ESP_LOGD("home_timing","Home: Raumliste: %u ms, %u Räume",(unsigned)(millis()-home_navigation_begin),(unsigned)rooms.size());
+    const uint32_t home_cards_begin=millis();
+    if(slots.empty() && (right_changed || !old_slots.empty()))
+      text(l.right(),DEVICE_TOP,"Keine Lichter, Rollläden, Markisen oder Heizungen in diesem Raum.",id(font_small),INK,l.card_width());
+    for(int row=0;row<DEVICE_ROWS;row++){
+      const int slot_index=id(home_device_offset)+row;
+      if(slot_index>=(int)slots.size())break;
+      const auto slot=slots[slot_index];
+      const int x=l.right(),y=DEVICE_TOP+row*l.card_h,w=l.card_width();
+      if(home_partial && !right_changed){
+        // Compare both cards in a paired row; update the row when either changed.
+        bool changed=false;
+        for(int device_index:{slot.first,slot.second}){
+          if(device_index<0)continue;
+          std::string before,after;
+          if(!old_devices.isNull() && device_index<(int)old_devices.size())
+            serializeJson(old_devices[device_index],before);
+          serializeJson(devices[device_index],after);
+          if(before!=after)changed=true;
+        }
+        if(!changed)continue;
+        fast_rect(x-2,y-2,w+8,208,PAPER);
+        it.rectangle(x-2,y-2,w+8,208,PAPER);
+        ESP_LOGI("ui_refresh","PARTIAL: Geraetezeile %d, IDs %s | %s, y=%d..%d",
+                 row,devices[slot.first]["id"] | "?",
+                 slot.second>=0?(devices[slot.second]["id"] | "?"):"-",y-2,y+206);
+      }
+      const bool paired=slot.second>=0;
+      const int half=(w-16)/2;
+      for(int column=0;column<(paired?2:1);column++){
+        const int device_index=column==0?slot.first:slot.second;
+        JsonObject e=devices[device_index].as<JsonObject>();
+        const int cx=paired?(column==0?x:x+half+16):x;
+        const int cw=paired?(column==0?half:w-half-16):w;
+        fast_rect(cx+4,y+4,cw,200,MID);
+        fast_rect(cx,y,cw,200,LIGHT);
+        std::string d=e["d"] | "",state=e["s"] | "",kind=e["kind"] | "";
+        const char* icon=d=="light"?"\U000F0335":d=="climate"?"\U000F0438":kind=="awning"?"\U000F07C7":"\U000F111C";
+        center(cx+40,y+37,icon,id(mdi_home),INK);
+        text(cx+78,y+13,e["n"] | "Gerät",id(font_lesson),INK,cw-95);
+        std::string status;
+        if(state=="unknown" || state=="unavailable" || state.empty())status="Nicht verfügbar";
+        else if(d=="light"){
+          status=state=="on"?"An":"Aus";
+          if((e["dim"] | false) && !e["b"].isNull())status+=" · "+epaper_home::number(e["b"].as<float>())+" %";
+        }else if(d=="cover"){
+          status=state=="open"?"Offen":state=="closed"?"Geschlossen":state=="opening"?"Öffnet":state=="closing"?"Schließt":state;
+          if(!e["p"].isNull())status+=" · "+epaper_home::number(e["p"].as<float>())+" % offen";
+        }else{
+          std::string unit=e["unit"] | "°C";
+          status="Ist: "+(e["cur"].isNull()?std::string("—"):epaper_home::number(e["cur"].as<float>())+" "+unit);
+          status+=" · Soll: "+(e["t"].isNull()?std::string("—"):epaper_home::number(e["t"].as<float>())+" "+unit);
+          status+=" · "+(state=="heat"?std::string("Heizen"):state=="auto"?std::string("Auto"):state=="off"?std::string("Aus"):state);
+        }
+        text(cx+24,y+67,status,id(font_small),INK,cw-48);
+        auto buttons=epaper_home::buttons(e);
+        if(buttons.empty())continue;
+        const int bw=(cw-40)/(int)buttons.size();
+        for(int b=0;b<(int)buttons.size();b++){
+          const int bx=cx+20+b*bw;
+          const auto &button=buttons[b];
+          const Color color=button.enabled?INK:DARK;
+          fast_rect(bx,y+115,bw-10,80,PAPER);
+          it.rectangle(bx,y+115,bw-10,80,color);
+          center(bx+35,y+155,button.icon,id(mdi_home),color);
+          text(bx+65,y+137,button.label,id(font_small),color,bw-85);
+        }
+      }
+    }
+    if(home_partial && !right_changed && old_slots.size()>slots.size()){
+      // HA removed a device: erase vacated rows on the active page.
+      for(int row=0;row<DEVICE_ROWS;row++){
+        int slot_index=id(home_device_offset)+row;
+        if(slot_index<(int)slots.size() || slot_index>=(int)old_slots.size())continue;
+        const int x=l.right(),y=DEVICE_TOP+row*l.card_h,w=l.card_width();
+        fast_rect(x-2,y-2,w+8,208,PAPER);
+        it.rectangle(x-2,y-2,w+8,208,PAPER);
+        ESP_LOGI("ui_refresh","PARTIAL: entfernte Geraetezeile %d",row);
+      }
+    }
+    if(!right_changed && old_last>0 && last==0){
+      fast_rect(l.right(),PAGER_TOP,l.card_width(),H-PAGER_TOP,PAPER);
+      it.rectangle(l.right(),PAGER_TOP,l.card_width(),H-PAGER_TOP,PAPER);
+    }
+    if(last>0 && (right_changed || old_slots.size()!=slots.size())){
+      if(home_partial && !right_changed){
+        fast_rect(l.right(),PAGER_TOP,l.card_width(),H-PAGER_TOP,PAPER);
+        it.rectangle(l.right(),PAGER_TOP,l.card_width(),H-PAGER_TOP,PAPER);
+      }
+      pager(l.right(),l.card_width(),id(home_device_offset)>0,id(home_device_offset)<last);
+    }
+    ESP_LOGI("home_ui","Raum %s: %u Geraete -> %u Anzeigezeilen, Seite %d/%d (je %d Zeilen)",
+             id(home_selected_room).c_str(),(unsigned)devices.size(),(unsigned)slots.size(),
+             id(home_device_offset)/DEVICE_ROWS+1,last/DEVICE_ROWS+1,DEVICE_ROWS);
+    // Only now replace the snapshot: the previous JSON must remain available
+    // throughout the device-by-device diff above.
+    id(home_render_json)=id(home_rooms_json).state;
+    painted_home_room=id(home_selected_room);
+    painted_home_sidebar_signature=sidebar_signature;
+    painted_home_room_offset=id(home_room_offset);
+    painted_home_device_offset=id(home_device_offset);
+    painted_home_message=id(home_message);
+    ESP_LOGD("home_timing","Home: %s, Geraetekarten: %u ms, %u Entitaeten im Raum, Offset %d",
+             home_partial?"PARTIAL":"FULL",(unsigned)(millis()-home_cards_begin),(unsigned)devices.size(),id(home_device_offset));
+    return;
+  }
+  if(id(current_page)==1){
+    // Room/floor dashboard inspired by HA's areas view. Only rooms with
+    // supported control entities are shown, just like Haussteuerung.
+    // Single 1872x1404 page: floor title + 6-column icon-card grid.
+    const uint32_t overview_start=millis();
+    id(home_overview_room_ids).clear();
+    id(home_overview_hitboxes).clear();
+    auto overview_doc=esphome::json::parse_json(id(home_rooms_json).state);
+    if(overview_doc.isNull() || overview_doc.overflowed() || !overview_doc["rooms"].is<JsonArray>()){
+      text(30,CONTENT_TOP+50,"Raumdaten fehlen – ${home_rooms_entity} / payload prüfen.",id(ui_body),INK,W-60);
+      return;
+    }
+    JsonArray overview_rooms=overview_doc["rooms"].as<JsonArray>();
+    auto canonical_floor=[](std::string f)->std::string{
+      if(f=="Dachgeschoß")return "Dachgeschoss";
+      if(f=="Obergeschoß")return "Obergeschoss";
+      if(f=="Erdgeschoss")return "Erdgeschoß";
+      if(f=="Untergeschoß" || f=="Kellergeschoss")return "Untergeschoss";
+      return f.empty()?std::string("Ohne Etage"):f;
+    };
+    auto floor_of=[&](JsonObject r)->std::string{
+      std::string f=r["floor"] | "";
+      if(f.empty())f=r["floor_name"] | "";
+      if(f.empty())f=r["etage"] | "";
+      if(f.empty())f=r["f"] | "";
+      return canonical_floor(f);
+    };
+    auto floor_rank=[](const std::string& f)->int{
+      if(f=="Dachgeschoss")return 0;
+      if(f=="Obergeschoss")return 1;
+      if(f=="Erdgeschoß")return 2;
+      if(f=="Untergeschoss")return 3;
+      if(f=="Ohne Etage")return 99;
+      return 50;
+    };
+    std::vector<int> visible;
+    visible.reserve(overview_rooms.size());
+    for(int i=0;i<(int)overview_rooms.size();i++){
+      JsonObject r=overview_rooms[i].as<JsonObject>();
+      JsonArray entities=r["entities"].as<JsonArray>();
+      if(!entities.isNull() && entities.size()>0)visible.push_back(i);
+    }
+    std::stable_sort(visible.begin(),visible.end(),[&](int a,int b){
+      JsonObject ra=overview_rooms[a].as<JsonObject>();
+      JsonObject rb=overview_rooms[b].as<JsonObject>();
+      const auto fa=floor_of(ra),fb=floor_of(rb);
+      const int rank_a=floor_rank(fa),rank_b=floor_rank(fb);
+      if(rank_a!=rank_b)return rank_a<rank_b;
+      if(fa!=fb)return fa<fb;
+      return std::string(ra["n"] | "")<std::string(rb["n"] | "");
+    });
+    struct FloorGroup {std::string name;std::vector<int> rooms;};
+    std::vector<FloorGroup> groups;
+    for(int i:visible){
+      JsonObject r=overview_rooms[i].as<JsonObject>();
+      const auto f=floor_of(r);
+      if(groups.empty() || groups.back().name!=f)groups.push_back({f,{}});
+      groups.back().rooms.push_back(i);
+    }
+    if(groups.empty()){
+      text(30,CONTENT_TOP+50,"Keine steuerbaren Räume vorhanden.",id(ui_body),INK,W-60);
+      return;
+    }
+    // Screenshot geometry: floor label then left-aligned, equal-width cards.
+    // If a floor contains > 6 rooms it occupies more than one grid row.
+    const int margin=64, gap_x=20, group_gap=12, header_h=52;
+    const int cols=6;
+    const int card_w=(W-2*margin-(cols-1)*gap_x)/cols;
+    const int content_y=CONTENT_TOP+8, bottom=H-16;
+    int rows=0;
+    for(const auto &g:groups)rows+=((int)g.rooms.size()+cols-1)/cols;
+    const int available=std::max(0,bottom-content_y-(int)groups.size()*header_h-
+                                  std::max(0,(int)groups.size()-1)*group_gap);
+    const int row_h=std::max(1,available/std::max(1,rows));
+    const Color ICON_COLOR=INK; // Small room symbols need full black contrast.
+    const Color CARD_BORDER(214,214,214);
+    auto floor_icon=[](const std::string &f)->const char*{
+      if(f=="Dachgeschoss")return "\U000F0D81"; // home-floor-2
+      if(f=="Obergeschoss")return "\U000F0D80"; // home-floor-1
+      if(f=="Erdgeschoß")return "\U000F0DD2"; // home-floor-0
+      if(f=="Untergeschoss")return "\U000F0DD3"; // home-floor-negative-1
+      return "\U000F02DC";
+    };
+    auto room_icon=[](JsonObject r)->const char*{
+      const std::string id=r["id"] | "";
+      const std::string name=r["n"] | "";
+      if(id=="ankleide" || name=="Ankleide")return "\U000F0F91"; // wardrobe-outline
+      if(id=="kleiderschrank" || name=="Kleiderschrank")return "\U000F0F90";
+      if(id=="bad_dachgeschoss")return "\U000F1818"; // bathtub
+      if(id=="bad_obergeschoss")return "\U000F09A1"; // shower-head
+      if(id=="bad_erdgeschoss")return "\U000F09A1"; // shower-head fallback: faucet glyph absent in installed font
+      if(id=="balkon" || name=="Balkon")return "\U000F1817";
+      if(id=="garten" || name=="Garten")return "\U000F1510";
+      if(id=="kuche" || name=="Küche")return "\U000F181C";
+      if(id=="wohnzimmer" || name=="Wohnzimmer")return "\U000F04B9";
+      if(id=="waschraum" || name=="Waschraum")return "\U000F072A";
+      if(id=="dachgeschoss" || id=="elisa_zimmer" || id=="maxim_zimmer" ||
+         id=="gastezimmer")return "\U000F02E3"; // bed
+      if(id.find("flur")!=std::string::npos)return "\U000F0821"; // floor-plan
+      std::string lower=name;
+      std::transform(lower.begin(),lower.end(),lower.begin(),[](unsigned char c){return (char)std::tolower(c);});
+      if(lower.find("bad")!=std::string::npos)return "\U000F09A1";
+      if(lower.find("zimmer")!=std::string::npos)return "\U000F02E3";
+      if(lower.find("flur")!=std::string::npos)return "\U000F0821";
+      return "\U000F02DC"; // neutral home icon for future/new rooms
+    };
+    int y=content_y;
+    for(const auto &group:groups){
+      center(margin+24,y+header_h/2,floor_icon(group.name),id(mdi_room_floors),INK);
+      text(margin+58,y+7,group.name,id(ui_title),INK,W-2*margin-58);
+      y+=header_h;
+      for(size_t index=0;index<group.rooms.size();index++){
+        const int column=(int)index%cols;
+        const int row=(int)index/cols;
+        const int x=margin+column*(card_w+gap_x);
+        const int card_y=y+row*row_h+3;
+        const int card_h=std::max(1,row_h-8);
+        JsonObject room=overview_rooms[group.rooms[index]].as<JsonObject>();
+        // 8px corner chamfer: rounded-looking card outline without a slow
+        // full-size rounded-pixel raster or a second framebuffer copy.
+        const int radius=std::min(14,std::max(1,card_h/12));
+        it.line(x+radius,card_y,x+card_w-radius,card_y,CARD_BORDER);
+        it.line(x+radius,card_y+card_h-1,x+card_w-radius,card_y+card_h-1,CARD_BORDER);
+        it.line(x,card_y+radius,x,card_y+card_h-radius,CARD_BORDER);
+        it.line(x+card_w-1,card_y+radius,x+card_w-1,card_y+card_h-radius,CARD_BORDER);
+        it.line(x,card_y+radius,x+radius,card_y,CARD_BORDER);
+        it.line(x+card_w-radius,card_y,x+card_w-1,card_y+radius,CARD_BORDER);
+        it.line(x,card_y+card_h-radius,x+radius,card_y+card_h-1,CARD_BORDER);
+        it.line(x+card_w-radius,card_y+card_h-1,x+card_w-1,card_y+card_h-radius,CARD_BORDER);
+        // Never wrap in the middle of a room name word. A single word
+        // (e.g. Dachgeschoss / Kleiderschrank / Elisa-Zimmer) remains on
+        // ONE line; select a smaller existing font if the normal one is too wide.
+        // Two-word names (e.g. Bad Obergeschoss) may break at the space.
+        center(x+card_w/2,card_y+std::min(72,card_h/3),room_icon(room),id(mdi_rooms),ICON_COLOR);
+        std::string label=clean(room["n"] | "Raum");
+        const int name_w=card_w-22;
+        const int label_center=card_y+card_h-std::min(62,card_h/3);
+        auto room_font=[&](const std::string &s){
+          if(width(s,id(font_lesson))<=name_w)return id(font_lesson);
+          if(width(s,id(font_small))<=name_w)return id(font_small);
+          return id(font_meta);
+        };
+        if(width(label,id(font_lesson))<=name_w || label.find(' ')==std::string::npos){
+          auto f=room_font(label);
+          center(x+card_w/2,label_center,fit(label,f,name_w),f,INK);
+        }else{
+          // Break only on whitespace; do not use the general-purpose
+          // pixel-based lines() helper, which also splits single words.
+          const size_t split=label.find(' ');
+          const std::string first=label.substr(0,split);
+          const std::string second=label.substr(label.find_first_not_of(' ',split));
+          auto f1=room_font(first),f2=room_font(second);
+          center(x+card_w/2,label_center-18,fit(first,f1,name_w),f1,INK);
+          center(x+card_w/2,label_center+19,fit(second,f2,name_w),f2,INK);
+        }
+        id(home_overview_room_ids).push_back(room["id"].as<std::string>());
+        auto &b=id(home_overview_hitboxes);
+        b.push_back(x);b.push_back(card_y);b.push_back(card_w);b.push_back(card_h);
+      }
+      y+=((int)group.rooms.size()+cols-1)/cols*row_h+group_gap;
+    }
+    ESP_LOGI("home_ui","Uebersicht: %u Etagen, %u Raeume, %d Rasterreihen, Kachel %dx%d, %u Hitboxen, Aufbau %u ms",
+             (unsigned)groups.size(),(unsigned)visible.size(),rows,card_w,row_h-8,
+             (unsigned)id(home_overview_room_ids).size(),(unsigned)(millis()-overview_start));
+    return;
+  }
+  if(id(current_page)==9){
+    // Day totals only. Cross lines from v4.0.9; complete redraw on entry/60min.
+    auto doc=esphome::json::parse_json(id(energy_flow_json).state);
+    const bool valid=!doc.isNull() && !doc.overflowed() && doc["pv"].is<JsonObject>();
+    if(!valid){
+      painted_energy_values.clear();
+      text(30,CONTENT_TOP+30,"Energieverteilung",id(ui_title),INK,W-60);
+      text(30,CONTENT_TOP+125,"Energiedaten fehlen: sensor.epaper_energy_flow / payload",id(ui_body),INK,W-60);
+      return;
+    }
+    JsonObject pv=doc["pv"].as<JsonObject>();
+    JsonObject grid=doc["grid"].as<JsonObject>();
+    JsonObject battery=doc["battery"].as<JsonObject>();
+    JsonObject home=doc["home"].as<JsonObject>();
+    JsonObject gas=doc["gas"].as<JsonObject>();
+    JsonObject water=doc["water"].as<JsonObject>();
+    auto num=[](JsonVariant v,int decimals,const char *unit)->std::string{
+      if(v.isNull())return "--";
+      float f=v.as<float>();if(!std::isfinite(f))return "--";
+      char b[64];snprintf(b,sizeof(b),"%.*f",decimals,(double)f);
+      std::string out=b;for(char &c:out)if(c=='.')c=',';
+      if(unit && *unit)out+=" "+std::string(unit);
+      return out;
+    };
+    auto today=[&](JsonObject o,const char *key,const char *unit){
+      return num(o[key].as<JsonVariant>(),2,unit);
+    };
+    const std::string pvv=today(pv,"energy_today","kWh");
+    const std::string gasv=today(gas,"today","m³");
+    const std::string inv=today(grid,"import_today","kWh");
+    const std::string outv=today(grid,"export_today","kWh");
+    const std::string homev=today(home,"energy_today","kWh");
+    const std::string chargev=today(battery,"charge_today","kWh");
+    const std::string dischargev=today(battery,"discharge_today","kWh");
+    const std::string waterv=today(water,"today","m³");
+    // Zendure battery icon reflects charge status when this hourly snapshot was created.
+    const bool charging=!battery["charge_power"].isNull() &&
+        battery["charge_power"].as<float>() > 15.0f &&
+        battery["charge_power"].as<float>() > (battery["discharge_power"].isNull() ? 0.0f : battery["discharge_power"].as<float>()) + 10.0f;
+    const bool cloudy_pv=!pv["energy_today"].isNull() &&
+        pv["energy_today"].as<float>() < 0.1f;
+    const std::string signature=pvv+"|"+gasv+"|"+inv+"|"+outv+"|"+
+           homev+"|"+chargev+"|"+dischargev+"|"+waterv+"|"+(cloudy_pv?"CLOUD":"SUN")+"|"+(charging?"CHG":"IDLE");
+    painted_energy_values=signature;
+    const bool static_elements=true;
+    const int cx_grid=310,cx_pv=935,cx_gas=1535;
+    const int cx_batt=935,cx_home=1535,cx_water=1535;
+    const int y_top=500,y_mid=865,y_bottom=1190;
+    const int radius=118;
+    const Color GRID_SHADE(120,120,120), PV_SHADE(90,90,90), GAS_SHADE(70,70,70),
+                HOME_SHADE(105,105,105), BAT_SHADE(145,145,145), WATER_SHADE(135,135,135);
+    // Simple orthogonal power-flow cross: no bezier curves or branch arcs.
+    if(static_elements){
+      text(40,CONTENT_TOP+22,"Energieverteilung",id(font_start_info),INK,W-80);
+      auto line2=[&](int x0,int y0,int x1,int y1,Color shade){
+        it.line(x0,y0,x1,y1,shade);
+        if(x0==x1)it.line(x0+1,y0,x1+1,y1,shade);
+        else it.line(x0,y0+1,x1,y1+1,shade);
+      };
+      // Main cross, reaching the node rings without drawing over icons or values.
+      line2(cx_grid+radius,y_mid,cx_home-radius,y_mid,GRID_SHADE);
+      line2(cx_pv,y_top+radius,cx_batt,y_bottom-radius,PV_SHADE);
+      // Gas and water retain the simple vertical connections from the HA reference.
+      line2(cx_gas,y_top+radius,cx_home,y_mid-radius,GAS_SHADE);
+      line2(cx_home,y_mid+radius,cx_water,y_bottom-radius,WATER_SHADE);
+    }
+    struct EnergyNode {int x,y; const char *icon; const char *value1; const char *value2; Color stroke; bool dual;};
+    const std::vector<EnergyNode> nodes={
+      {cx_pv,y_top,cloudy_pv?"\U000F0595":"\U000F0A72",pvv.c_str(),"",PV_SHADE,false},
+      {cx_gas,y_top,"\U000F0238",gasv.c_str(),"",GAS_SHADE,false},
+      {cx_grid,y_mid,"\U000F0D3E",inv.c_str(),outv.c_str(),GRID_SHADE,true},
+      {cx_home,y_mid,"\U000F02DC",homev.c_str(),"",HOME_SHADE,false},
+      {cx_batt,y_bottom,charging?"\U000F0084":"\U000F0079",dischargev.c_str(),chargev.c_str(),BAT_SHADE,true},
+      {cx_water,y_bottom,"\U000F058C",waterv.c_str(),"",WATER_SHADE,false}
+    };
+    for(auto &n:nodes){
+      if(static_elements){
+        for(int r=radius-2;r<=radius;r++)it.circle(n.x,n.y,r,n.stroke);
+        center(n.x,n.y-44,n.icon,id(mdi_energy),INK);
+      }
+      if(n.dual){
+        const std::string line1=std::string(n.x==cx_grid?"→":"↓")+n.value1;
+        const std::string line2=std::string(n.x==cx_grid?"←":"↑")+n.value2;
+        center(n.x,n.y+10,fit(line1,id(ui_small),178),id(ui_small),INK);
+        center(n.x,n.y+48,fit(line2,id(ui_small),178),id(ui_small),INK);
+      } else {
+        center(n.x,n.y+27,fit(n.value1,id(ui_small),178),id(ui_small),INK);
+        if(std::string(n.value2).size())center(n.x,n.y+52,fit(n.value2,id(ui_small),178),id(ui_small),INK);
+      }
+    }
+    ESP_LOGI("energy_flow","Energie gerendert: PV %s; Haus %s; Gas %s; Wasser %s; Speicher %s",
+            pvv.c_str(),homev.c_str(),gasv.c_str(),waterv.c_str(),charging?"LAEDT":"NORMAL");
+    return;
+  }
+  if(id(current_page)==10){
+    // Snapshot of direct HA subscriptions; never coerce missing values to zero.
+    const bool connected=id(e1003).is_connected() && wifi::global_wifi_component->is_connected();
+    auto reading=[&](auto *sensor)->float {
+      return connected && sensor->has_state() && std::isfinite(sensor->state) ? sensor->state : NAN;
+    };
+    const float panels[7]={reading(id(sf800_pv1)),reading(id(sf800_pv2)),reading(id(sf800_pv3)),
+      reading(id(deye_pv1)),reading(id(deye_pv2)),reading(id(deye_pv3)),reading(id(deye_pv4))};
+    const float sf=panels[0]+panels[1]+panels[2];
+    const float off=reading(id(solar_offgrid));
+    const float deye=std::isfinite(off)?std::max(0.0f,-off):NAN;
+    const float total=sf+deye, house=reading(id(solar_house));
+    auto watts=[](float v,bool sign=false)->std::string {
+      if(!std::isfinite(v))return "-- W";
+      char b[40];snprintf(b,sizeof(b),sign?"%+.0f W":"%.0f W",(double)v);return b;
+    };
+    static std::string cached[14];
+    auto changed=[&](int slot,const std::string &key){
+      bool repaint=!solar_partial || cached[slot]!=key;cached[slot]=key;return repaint;
+    };
+    const int margin=40,gap=28,half=(W-2*margin-gap)/2;
+    const int summary_y=CONTENT_TOP+100, summary_h=210;
+    const int systems_y=summary_y+summary_h+38, systems_h=H-systems_y-95;
+    if(!solar_partial){
+      text(margin,CONTENT_TOP+14,"Solar · aktuelle Leistung",id(font_start_info),INK,W-80);
+      for(int col=0;col<2;col++){
+        int x=margin+col*(half+gap);
+        it.rectangle(x,summary_y,half,summary_h,MID);
+        it.rectangle(x,systems_y,half,systems_h,MID);
+      }
+      text(margin+24,summary_y+16,"SOLAR GESAMT",id(ui_small),INK,half-48);
+      text(margin+half+gap+24,summary_y+16,"HAUS · NETZBILANZ",id(ui_small),INK,half-48);
+      text(margin+24,summary_y+166,"3 Paneele + Deye am Off-grid-Port",id(ui_small),INK,half-48);
+      text(margin+half+gap+24,summary_y+166,"+ Bezug / - Einspeisung",id(ui_small),INK,half-48);
+      text(margin+24,systems_y+20,"SolarFlow 800 Pro",id(font_start_info),INK,half-48);
+      text(margin+half+gap+24,systems_y+20,"Deye M200g4",id(font_start_info),INK,half-48);
+      text(margin+24,systems_y+135,"Eingaenge 1 bis 3 · DC-Leistung",id(ui_small),INK,half-48);
+      text(margin+half+gap+24,systems_y+135,"SolarFlow 2400 AC+ · Off-grid",id(ui_small),INK,half-48);
+      text(margin+24,systems_y+systems_h-60,"Panel 4 nicht belegt",id(ui_small),DARK,half-48);
+      text(margin+half+gap+24,systems_y+systems_h-60,"Panelwerte werden nicht doppelt addiert",id(ui_small),DARK,half-48);
+    }
+    const float values[4]={total,house,sf,deye};
+    for(int i=0;i<4;i++){
+      int x=margin+(i%2)*(half+gap)+24;
+      int y=i<2?summary_y+64:systems_y+77;
+      std::string label=watts(values[i],i==1);
+      if(changed(i,label)){
+        fast_rect(x,y,half-48,i<2?96:52,PAPER);
+        text(x,y,label,i<2?id(font_start_weather):id(font_start_info),INK,half-48);
+      }
+    }
+    // Shared adaptive scale: all seven bars use the same W range.
+    float peak=100.0f;for(float v:panels)if(std::isfinite(v))peak=std::max(peak,v);
+    const float scale=std::ceil(peak/100.0f)*100.0f;
+    const int row_h=(systems_h-255)/4;
+    for(int i=0;i<7;i++){
+      int col=i<3?0:1,row=i<3?i:i-3;
+      int x=margin+col*(half+gap)+24,y=systems_y+200+row*row_h;
+      std::string label=watts(panels[i]);
+      std::string key=label+"/"+watts(scale);
+      if(changed(4+i,key)){
+        fast_rect(x,y,half-48,row_h-8,PAPER);
+        text(x,y,"PV "+std::to_string(row+1),id(ui_body),INK,150);
+        text(x+half-280,y,label,id(ui_body),INK,230);
+        fast_rect(x,y+52,half-48,22,LIGHT);
+        if(std::isfinite(panels[i])){
+          int bw=(int)((half-48)*std::max(0.0f,panels[i])/scale);
+          fast_rect(x,y+52,bw,22,col==0?INK:DARK);
+        }
+      }
+    }
+    std::string status=connected?"Anzeige ":"HA offline · ";
+    status+=now.is_valid()?now.strftime("%H:%M"):"--:--";
+    status+=" · 60 s · Balkenskala 0–"+watts(scale);
+    if(!std::isfinite(total) || !std::isfinite(house))status+=" · Messwerte fehlen";
+    if(changed(11,status)){
+      fast_rect(margin,H- 65,W-80,48,PAPER);
+      text(margin,H- 65,status,id(ui_small),INK,W-80);
+    }
+    ESP_LOGI("solar", "Gesamt=%s; SF800=%s; Deye Off-grid=%s; Netzbilanz=%s",
+      watts(total).c_str(),watts(sf).c_str(),watts(deye).c_str(),watts(house,true).c_str());
+    return;
+  }

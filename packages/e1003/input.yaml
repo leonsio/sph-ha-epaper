@@ -1,0 +1,426 @@
+binary_sensor:
+- platform: template
+  id: screensaver_sd_ready
+  name: E1003 SD-Karte lesbar
+  entity_category: diagnostic
+  lambda: return id(sd_photos).ready();
+- platform: template
+  name: E1003 SD-Karte vorhanden
+  entity_category: diagnostic
+  lambda: return id(sd_photos).card_present();
+- platform: template
+  name: E1003 Screensaver aktiv
+  entity_category: diagnostic
+  lambda: return id(sd_photos).active();
+# GPIO1 misst nur die Batteriespannung, nicht den USB-Ladezustand.
+# Optionaler, von HA bereitzustellender Sensor (z. B. externer USB-Stromsensor).
+# Ohne diesen Sensor wird kein falsches Netzstrom/Laedt-Symbol eingeblendet.
+- platform: homeassistant
+  id: e1003_usb_power
+  entity_id: ${e1003_usb_power_entity}
+  internal: true
+  on_state:
+    then:
+    - lambda: |-
+        id(status_dirty)=true;
+        ESP_LOGI("power_status", "Externe Stromversorgung laut HA: %s", x?"AN":"AUS");
+    - script.execute: refresh_from_ha
+- platform: gpio
+  id: button_home
+  internal: true
+  pin:
+    number: GPIO3
+    mode: INPUT_PULLUP
+    inverted: true
+  filters:
+  - delayed_on: 50ms
+  - delayed_off: 50ms
+  on_press:
+    then:
+    - script.execute: deep_sleep_idle
+    - script.execute: screensaver_activity
+    - lambda: |-
+        ESP_LOGI("button", "Taste gedrückt: Home");
+    - script.execute:
+        id: navigate_pages
+        direction: 0
+- platform: gpio
+  id: button_previous
+  internal: true
+  pin:
+    number: GPIO5
+    mode: INPUT_PULLUP
+    inverted: true
+  filters:
+  - delayed_on: 50ms
+  - delayed_off: 50ms
+  on_press:
+    then:
+    - script.execute: deep_sleep_idle
+    - script.execute: screensaver_activity
+    - lambda: |-
+        ESP_LOGI("button", "Taste gedrückt: Zurück");
+    - script.execute:
+        id: navigate_pages
+        direction: -1
+- platform: gpio
+  id: button_next
+  internal: true
+  pin:
+    number: GPIO4
+    mode: INPUT_PULLUP
+    inverted: true
+  filters:
+  - delayed_on: 50ms
+  - delayed_off: 50ms
+  on_press:
+    then:
+    - script.execute: deep_sleep_idle
+    - script.execute: screensaver_activity
+    - lambda: |-
+        ESP_LOGI("button", "Taste gedrückt: Vor");
+    - script.execute:
+        id: navigate_pages
+        direction: 1
+i2c:
+  id: e1003_i2c
+  sda: GPIO19
+  scl: GPIO20
+touchscreen:
+- platform: gt911
+  id: e1003_touch
+  i2c_id: e1003_i2c
+  display: epaper
+  interrupt_pin: GPIO2
+  reset_pin: GPIO48
+  transform:
+    # GT911 X already runs in the display's logical direction on this E1003.
+    # The previous mirror_x inverted the navigation a second time.
+    mirror_x: false
+  on_touch:
+  - script.execute: screensaver_activity
+  - script.execute: deep_sleep_idle
+  - lambda: |-
+      id(sd_photos).activity();
+      if(id(screensaver_waking)){id(screensaver_waking)=false;return;}
+      const int W = id(epaper).get_width();
+      const int H = id(epaper).get_height();
+      const int NAV_LEFT = 12, NAV_RIGHT = W - 210;
+      const int NAV1_TOP = 8, NAV1_BOTTOM = 88;
+      const int NAV2_TOP = 96, NAV2_BOTTOM = 168;
+      const bool maxim_level = id(current_page) >= 2 && id(current_page) <= 6;
+      const bool home_level = id(current_page)==1 || (id(current_page)>=8 && id(current_page)<=10);
+      // Align the touch-cell edges EXACTLY with the integer-divided drawn tabs.
+      // Multiplication-before-division would misroute boundary pixels.
+      auto nav_cell=[&](int x,int count)->int {
+        int cell=0;
+        for(int i=1;i<count;i++)
+          if(x>=NAV_LEFT+i*(NAV_RIGHT-NAV_LEFT)/count)cell=i;
+        return cell;
+      };
+
+      // Always log the received display coordinates before doing anything else.
+      // The mirrored comparison coordinates make rotation/mirroring mistakes obvious.
+      ESP_LOGI("touch_nav",
+               "TOUCH x=%d y=%d | raw x=%d y=%d | Vergleich gespiegelt x=%d y=%d | Display=%dx%d | Seite=%d refresh_busy=%d",
+               touch.x, touch.y, touch.x_raw, touch.y_raw, W - 1 - touch.x, H - 1 - touch.y, W, H,
+               id(current_page), id(refresh_busy) ? 1 : 0);
+      ESP_LOGI("touch_nav", "Touch-Transform: mirror_x=false, mirror_y=false, swap_xy=false");
+      ESP_LOGI("touch_nav",
+               "NAV Raster: Ebene1 x=%d..%d y=%d..%d (dynamisch) | Ebene2 x=%d..%d y=%d..%d (Maxim=%d Home=%d)",
+               NAV_LEFT, NAV_RIGHT - 1, NAV1_TOP, NAV1_BOTTOM - 1,
+               NAV_LEFT, NAV_RIGHT - 1, NAV2_TOP, NAV2_BOTTOM - 1, maxim_level ? 1 : 0, home_level ? 1 : 0);
+
+      // Log dynamically sized first row; hidden areas receive no touch cells.
+      const int top_pages[5]={0,1,2,11,7};
+      const char *top_names[5]={"Start","Home","Maxim","Elisa","Wetter"};
+      const uint32_t top_bits[5]={1U,2U,4U,16U,8U};
+      int visible_top[5],visible_count=0;
+      for(int i=0;i<5;i++)if(id(nav_visibility_mask)&top_bits[i])visible_top[visible_count++]=i;
+      if(visible_count==0){visible_top[0]=0;visible_count=1;}
+      ESP_LOGI("touch_nav", "Hauptnavigation %d sichtbare Bereiche (Maske 0x%X)",visible_count,(unsigned)id(nav_visibility_mask));
+      if(touch.x>=NAV_LEFT && touch.x<NAV_RIGHT && touch.y>=NAV1_TOP && touch.y<NAV1_BOTTOM){
+        const int cell=nav_cell(touch.x,visible_count),idx=visible_top[cell];
+        ESP_LOGI("touch_nav","Obere Zelle %d/%d: %s -> Seite %d",cell+1,visible_count,top_names[idx],top_pages[idx]);
+      }
+      if (id(refresh_busy)) {
+        ESP_LOGW("touch_nav", "Touch ignoriert: Display-Refresh läuft gerade");
+        return;
+      }
+
+      // Home / Übersicht: exact hitboxes captured from the LAST painted grid.
+      // Select room FIRST so the Haussteuerung opens on the requested room,
+      // rather than choosing the default or preserving an unrelated room.
+      if(id(current_page)==0 && touch.y>=152){
+        const int right=24+(W-72)/2+24,col=(W-72)/2;
+        // Grocery tiles are actions, but only after an exact item hitbox match;
+        // use UID to distinguish duplicate item names. No optimistic removal.
+        if(touch.x>=right+22 && touch.x<right+col && touch.y>=1155 && touch.y<1362){
+          const int tw=col/2-38;
+          for(int i=0;i<6;i++){
+            const int tx=right+22+(i%2)*(col/2);
+            const int ty=1155+(i/2)*72;
+            if(touch.x<tx || touch.x>=tx+tw || touch.y<ty || touch.y>=ty+63)continue;
+            if(id(shopping_last_touch)!=0 && (uint32_t)(millis()-id(shopping_last_touch))<1200)return;
+            auto doc=esphome::json::parse_json(id(start_dashboard_json).state);
+            if(doc.isNull()||doc.overflowed())return;
+            JsonArray items=doc["shopping"]["items"].as<JsonArray>();
+            if(i>=static_cast<int>(items.size()))return;
+            JsonObject item=items[i].as<JsonObject>();
+            const std::string uid=item["uid"]|"";
+            const std::string name=item["summary"]|"";
+            if(uid.empty()&&name.empty())return;
+            id(shopping_last_touch)=millis();
+            ESP_LOGI("shopping","Einkauf geklickt: Eintrag %d: %s",i+1,name.c_str());
+            id(shopping_complete).execute(uid,name);
+            return;
+          }
+        }
+        // Complete Hausstatus tile opens Haussteuerung without triggering controls.
+        if(touch.x>=right && touch.x<right+col && touch.y>=762 && touch.y<1062){
+          if(!(id(nav_visibility_mask)&2U))return;
+          id(home_selected_room)="";
+          id(home_device_offset)=0;
+          id(home_message)="";
+          ESP_LOGI("home_ui","Start -> Haussteuerung: Hausstatus-Kachel");
+          id(select_page).execute(8);return;
+        }
+      }
+      if(id(current_page)==1 && touch.y>=180){
+        const auto &ids=id(home_overview_room_ids);
+        const auto &rects=id(home_overview_hitboxes);
+        if(rects.size()!=ids.size()*4U)return;
+        for(size_t i=0;i<ids.size();i++){
+          const int x=rects[4*i],y=rects[4*i+1],w=rects[4*i+2],h=rects[4*i+3];
+          if(touch.x>=x && touch.x<x+w && touch.y>=y && touch.y<y+h){
+            if(millis()-id(home_last_touch)<350)return;
+            id(home_last_touch)=millis();
+            id(home_selected_room)=ids[i];
+            id(home_device_offset)=0;
+            id(home_message)="";
+            ESP_LOGI("home_ui","Uebersicht -> Haussteuerung: Raum %s, Touch x=%d y=%d, Kachel %d/%d/%d/%d",
+                     ids[i].c_str(),touch.x,touch.y,x,y,w,h);
+            id(select_page).execute(8);
+            return;
+          }
+        }
+        ESP_LOGD("touch_nav","Home Uebersicht: keine Raumkachel an x=%d y=%d",touch.x,touch.y);
+        return;
+      }
+
+      if (id(current_page)==8 && touch.y>=180) {
+        auto l=epaper_home::Layout{W,H};
+        l.top=184; // must match Haussteuerung renderer
+        const int DEVICE_TOP=250;
+        const int DEVICE_ROWS=std::max(1,(H-DEVICE_TOP-95)/l.card_h);
+        // The pager extends to the bottom edge: GT911 produced y=1386..1398
+        // for taps on the bottom control, outside the old H-20 hitbox.
+        const int PAGER_TOP=H-98;
+        if(millis()-id(home_last_touch)<350)return;
+        id(home_last_touch)=millis();
+        auto doc=esphome::json::parse_json(id(home_render_json));
+        if(doc.isNull() || doc.overflowed())return;
+        JsonArray rooms=doc["rooms"].as<JsonArray>();
+        auto repaint=[&](){id(home_partial_refresh)=true;id(refresh_display).execute();};
+        if(touch.x>=12 && touch.x<l.sidebar) {
+          // Touch uses EXACTLY the ordered room list of the last painted frame.
+          // Floor headings are non-clickable; room cells fill the remaining height.
+          const auto &order=id(home_room_order);
+          const auto &floors=id(home_room_floors);
+          if(order.size()!=floors.size())return;
+          // One-page compact layout. Geometry below MUST match the Home renderer.
+          // All room tiles are touchable, floor headings and inter-tile gaps are not.
+          const int shown=(int)order.size();
+          const int room_bottom=H-20;
+          const int header_h=36;
+          int headings=0;
+          for(int row=0;row<shown;row++)
+            if(row==0 || floors[row]!=floors[row-1])headings++;
+          const int room_space=std::max(0,room_bottom-l.top-headings*header_h);
+          if(shown>0 && touch.y>=l.top && touch.y<room_bottom){
+            int y=l.top;
+            for(int row=0;row<shown;row++){
+              if(row==0 || floors[row]!=floors[row-1])y+=header_h;
+              // Cumulative division spreads the remainder across ALL tiles.
+              const int tile_span=(row+1)*room_space/shown-row*room_space/shown;
+              const int end_y=y+tile_span;
+              const int height=std::max(1,tile_span-4);
+              if(touch.y>=y && touch.y<y+height){
+                const int i=order[row];
+                if(i>=0 && i<(int)rooms.size()){
+                  id(home_selected_room)=rooms[i]["id"].as<std::string>();
+                  id(home_device_offset)=0;id(home_message)="";
+                  ESP_LOGI("home_ui","Etage %s / Raum gewaehlt: %s (y=%d..%d)",
+                           floors[row].c_str(),id(home_selected_room).c_str(),y,y+height-1);
+                  repaint();
+                }
+                return;
+              }
+              y=end_y;
+            }
+          }
+          return;
+        }
+        JsonObject room;
+        for(JsonObject r:rooms)if(r["id"].as<std::string>()==id(home_selected_room)){room=r;break;}
+        JsonArray devices=room["entities"].as<JsonArray>();
+      // Display rows: pair matching light/cover names containing the standalone
+      // words Links and Rechts. No pairing across different device types or
+      // different name stems (for example "Licht - Links" / "Licht - Rechts").
+      auto build_device_rows=[](JsonArray all)->std::vector<std::pair<int,int>> {
+        std::vector<std::pair<int,int>> result;
+        std::vector<bool> used(all.size(),false);
+        auto pair_name=[](JsonObject e)->std::pair<int,std::string> {
+          std::string domain=e["d"] | "";
+          if(domain!="light" && domain!="cover")return {0,""};
+          std::string name=e["n"] | "";
+          std::string token,stem;
+          int side=0;
+          auto flush=[&](){
+            if(token.empty())return;
+            if(token=="links" || token=="rechts"){
+              const int found=token=="links"?1:2;
+              side=(side==0 || side==found)?found:3;
+            }else{
+              if(!stem.empty())stem+=" ";
+              stem+=token;
+            }
+            token.clear();
+          };
+          for(unsigned char c:name){
+            if((c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9'))
+              token+=(char)std::tolower(c);
+            else flush();
+          }
+          flush();
+          return (side==1 || side==2)?std::make_pair(side,domain+"|"+stem):std::make_pair(0,std::string());
+        };
+        for(int i=0;i<(int)all.size();i++){
+          if(used[i])continue;
+          used[i]=true;
+          JsonObject e=all[i].as<JsonObject>();
+          auto current=pair_name(e);
+          bool found=false;
+          if(current.first>0)for(int j=i+1;j<(int)all.size();j++){
+            if(used[j])continue;
+            JsonObject other=all[j].as<JsonObject>();
+            auto candidate=pair_name(other);
+            if(candidate.second==current.second && candidate.first>0 && candidate.first!=current.first){
+              used[j]=true;
+              result.emplace_back(current.first==1?i:j,current.first==1?j:i);
+              found=true;
+              break;
+            }
+          }
+          if(!found)result.emplace_back(i,-1);
+        }
+        return result;
+      };
+        const auto slots=build_device_rows(devices);
+        if(touch.x>=l.right() && touch.x<W-24 && touch.y>=PAGER_TOP && touch.y<H) {
+          const int last=slots.empty()?0:(((int)slots.size()-1)/DEVICE_ROWS)*DEVICE_ROWS;
+          const int old_offset=id(home_device_offset);
+          const int direction=touch.x<l.right()+l.card_width()/2?-1:1;
+          id(home_device_offset)=std::max(0,std::min(last,old_offset+direction*DEVICE_ROWS));
+          ESP_LOGI("home_ui","Geraete-Navigation %s: touch=(%d,%d), Offset %d -> %d, Zeilen %u, letzte Seite %d",
+                   direction<0?"Zurueck":"Weiter",touch.x,touch.y,old_offset,id(home_device_offset),
+                   (unsigned)slots.size(),last);
+          if(old_offset!=id(home_device_offset))repaint();
+          return;
+        }
+        if(touch.x<l.right() || touch.x>=W-24 || touch.y<DEVICE_TOP || touch.y>=PAGER_TOP)return;
+        const int row=(touch.y-DEVICE_TOP)/l.card_h, within=(touch.y-DEVICE_TOP)%l.card_h;
+        const int slot_index=id(home_device_offset)+row;
+        if(row>=DEVICE_ROWS || slot_index>=(int)slots.size() || within<115 || within>=195)return;
+        const auto slot=slots[slot_index];
+        const int full_width=l.card_width();
+        const int half=(full_width-16)/2;
+        const bool paired=slot.second>=0;
+        const int second_x=l.right()+half+16;
+        const bool right_card=paired && touch.x>=second_x;
+        if(paired && touch.x>=l.right()+half && touch.x<second_x)return;
+        const int card_index=right_card?slot.second:slot.first;
+        JsonObject e=devices[card_index].as<JsonObject>();
+        const int card_x=right_card?second_x:l.right();
+        const int card_width=paired?(right_card?full_width-half-16:half):full_width;
+        if(touch.x>=card_x+card_width)return;
+        auto buttons=epaper_home::buttons(e);
+        if(buttons.empty())return;
+        const int bw=(card_width-40)/(int)buttons.size();
+        const int relative=touch.x-card_x-20;
+        if(relative<0 || bw<=0)return;
+        const int b=relative/bw;
+        if(b>=(int)buttons.size() || relative%bw>=bw-10 || !buttons[b].enabled)return;
+        if(!id(e1003).is_connected()) {
+          id(home_message)="Keine Verbindung zu Home Assistant.";repaint();return;
+        }
+        const auto &button=buttons[b];
+        ESP_LOGI("home_ui","Geraet %s [%s] Button %s, Karte x=%d..%d, Zeile=%d",
+                 e["id"] | "?",right_card?"rechts":"links",button.label.c_str(),card_x,card_x+card_width-1,row);
+        // Resolve light on/off in HA, never against a possibly stale display snapshot.
+        const bool power_button=e["d"].as<std::string>()=="light" &&
+            (button.operation=="on" || button.operation=="off");
+        id(home_command).execute(e["id"].as<std::string>(),power_button?std::string("toggle"):button.operation,button.value);
+        return;
+      }
+
+      // Shared footer geometry for Maxim lists (substitutions, homework, exams).
+      if(id(current_page)>=4 && id(current_page)<=6 && touch.y>=H-72 && touch.y<H){
+        const int direction=touch.x<W/3?-1:(touch.x>=2*W/3?1:0);
+        const int next=std::max(0,std::min(id(list_offset)+direction,id(list_pages)-1));
+        if(direction && next!=id(list_offset)){
+          id(list_offset)=next;
+          id(dirty_pages)|=1U<<id(current_page);
+          ESP_LOGI("touch_nav","Maxim Blaettern: Seite=%d Abschnitt=%d/%d",id(current_page),next+1,id(list_pages));
+          id(refresh_display).execute();
+        }
+        return;
+      }
+
+      // Level 1: only the enabled tabs, resized to use the full row.
+      if(touch.y>=NAV1_TOP && touch.y<NAV1_BOTTOM && touch.x>=NAV_LEFT && touch.x<NAV_RIGHT){
+        int cell=nav_cell(touch.x,visible_count);
+        const int idx=visible_top[cell];
+        ESP_LOGI("touch_nav","TREFFER Ebene1 %s -> Seite %d (Maske 0x%X)",top_names[idx],top_pages[idx],(unsigned)id(nav_visibility_mask));
+        id(select_page).execute(top_pages[idx]);
+        return;
+      }
+
+      // Level 2 exists inside Home (4 tabs) and Maxim (5 tabs).
+      if ((home_level || maxim_level) && touch.y >= NAV2_TOP && touch.y < NAV2_BOTTOM &&
+          touch.x >= NAV_LEFT && touch.x < NAV_RIGHT) {
+        const int count=home_level?4:5;
+        int cell=nav_cell(touch.x,count);
+        const int home_targets[4]={1,8,9,10};
+        const char *home_names[4]={"Übersicht","Haussteuerung","Energie","Solar"};
+        const int maxim_targets[5]={2,3,4,5,6};
+        const char *maxim_names[5]={"Übersicht","Stundenplan","Vertretungsplan","Hausaufgaben","Arbeiten"};
+        const int target=home_level?home_targets[cell]:maxim_targets[cell];
+        int x0=NAV_LEFT+cell*(NAV_RIGHT-NAV_LEFT)/count;
+        int x1=NAV_LEFT+(cell+1)*(NAV_RIGHT-NAV_LEFT)/count-1;
+        ESP_LOGI("touch_nav",
+                 "TREFFER Ebene2: x=%d y=%d -> '%s' | Zelle=%d Sollbereich x=%d..%d y=%d..%d -> Seite=%d",
+                 touch.x,touch.y,home_level?home_names[cell]:maxim_names[cell],cell,x0,x1,NAV2_TOP,NAV2_BOTTOM-1,target);
+        id(select_page).execute(target);
+        return;
+      }
+
+      if (touch.y >= NAV2_TOP && touch.y < NAV2_BOTTOM && !maxim_level && !home_level) {
+        ESP_LOGW("touch_nav",
+                 "Touch liegt in Ebene2 (y=%d), aber kein Untermenü ist auf Seite %d aktiv",
+                 touch.y, id(current_page));
+      } else if (touch.y >= NAV1_BOTTOM && touch.y < NAV2_TOP) {
+        ESP_LOGW("touch_nav", "Touch im Zwischenraum der Navigationszeilen: y=%d", touch.y);
+      } else if (touch.y >= NAV2_BOTTOM) {
+        ESP_LOGW("touch_nav", "Touch unterhalb der Navigation/Inhaltsbereich: x=%d y=%d", touch.x, touch.y);
+      } else if (touch.y < NAV1_TOP) {
+        ESP_LOGW("touch_nav", "Touch oberhalb der Navigation: y=%d", touch.y);
+      } else {
+        ESP_LOGW("touch_nav", "Touch innerhalb Navigation nicht zugeordnet: x=%d y=%d", touch.x, touch.y);
+      }
+spi:
+  id: epaper_spi_bus
+  interface: spi2  # shared with SDSPI; keep this explicit
+  clk_pin: GPIO7
+  mosi_pin: GPIO9
+  miso_pin: GPIO8

@@ -1,0 +1,295 @@
+|
+  if(id(current_page)==0){
+    auto doc=esphome::json::parse_json(id(start_dashboard_json).state);
+    const bool ready=!doc.isNull() && !doc.overflowed() && doc["version"].as<int>()==1;
+    const int left=24, gap=24, col=(W-48-gap)/2, right=left+col+gap;
+    static std::string start_cache[8];
+    auto encoded=[](JsonVariant v){std::string s;serializeJson(v,s);return s;};
+    auto card=[&](int slot,int x,int y,int h,const std::string &signature){
+      if(start_partial && start_cache[slot]==signature)return false;
+      start_cache[slot]=signature;
+      fast_rect(x,y,col,h,PAPER);it.rectangle(x,y,col,h,MID);
+      return true;
+    };
+    auto number=[](JsonVariant v,int places,const char *unit){
+      if(v.isNull() || !v.is<float>() || !std::isfinite(v.as<float>()))return std::string("-- ")+unit;
+      char b[48];snprintf(b,sizeof(b),"%.*f %s",places,(double)v.as<float>(),unit);
+      std::string s=b;for(char &c:s)if(c=='.')c=',';return s;
+    };
+    auto condition=[](const std::string &s)->std::string{
+      if(s=="sunny")return "Sonnig";if(s=="clear-night")return "Klar";
+      if(s=="partlycloudy")return "Heiter bis wolkig";if(s=="cloudy")return "Bewölkt";
+      if(s=="rainy")return "Regen";if(s=="pouring")return "Starkregen";
+      if(s=="snowy")return "Schnee";if(s=="snowy-rainy")return "Schneeregen";
+      if(s=="fog")return "Nebel";if(s=="lightning"||s=="lightning-rainy")return "Gewitter";
+      if(s=="windy"||s=="windy-variant")return "Windig";if(s=="hail")return "Hagel";
+      return s.empty()||s=="unknown"||s=="unavailable"?"Wetter unbekannt":s;
+    };
+  auto start_weather_glyph = [&](const char *raw) -> const char * {
+    std::string c = raw ? raw : "";
+  
+    if (c == "sunny") return "\U000F0599";
+    if (c == "clear-night") return "\U000F0594";
+    if (c == "partlycloudy") return "\U000F0595";
+    if (c == "cloudy") return "\U000F0590";
+    if (c == "fog") return "\U000F0591";
+    if (c == "hail") return "\U000F0592";
+    if (c == "lightning") return "\U000F0593";
+    if (c == "lightning-rainy") return "\U000F067E";
+    if (c == "pouring") return "\U000F0596";
+    if (c == "rainy") return "\U000F0597";
+    if (c == "snowy") return "\U000F0598";
+    if (c == "snowy-rainy") return "\U000F067F";
+    if (c == "windy") return "\U000F059D";
+    if (c == "windy-variant") return "\U000F059E";
+    if (c == "exceptional") return "\U000F0F38";
+    return "";
+  };
+  auto draw_waste_icon = [&](int x, int y, std::string name) {
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char c) { return (char) std::tolower(c); });
+    // All assets are alpha-only BINARY masks (64x70), BLACK on white.
+    if (name.find("gelb") != std::string::npos || name.find("wertstoff") != std::string::npos)
+      it.image(x, y, id(waste_gelb), INK);
+    else if (name.find("grün") != std::string::npos || name.find("gruen") != std::string::npos ||
+             name.find("grünschnitt") != std::string::npos || name.find("garten") != std::string::npos)
+      it.image(x, y, id(waste_gruen), INK);
+    else if (name.find("bio") != std::string::npos)
+      it.image(x, y, id(waste_bio), INK);
+    else if (name.find("papier") != std::string::npos || name.find("pappe") != std::string::npos ||
+             name.find("blaue tonne") != std::string::npos)
+      it.image(x, y, id(waste_papier), INK);
+    else if (name.find("rest") != std::string::npos || name.find("hausmüll") != std::string::npos ||
+             name.find("hausmuell") != std::string::npos)
+      it.image(x, y, id(waste_rest), INK);
+    else
+      center(x+32, y+35, "\U000F0A7A", id(mdi_start), INK);
+    };
+  
+    JsonArray people=doc["people"].as<JsonArray>();
+    const std::string presence_signature=encoded(doc["people"]);
+    auto presence_label=[](const std::string &state)->std::string{
+      if(state.empty()||state=="unknown"||state=="unavailable")return "Unbekannt";
+      if(state=="home")return "Zuhause";
+      if(state=="not_home")return "Unterwegs";
+      return state; // e.g. Schule, Arbeit: retain the actual zone name.
+    };
+    if(card(0,left,104,238,presence_signature)){
+      int i=0;
+      for(JsonObject p:people){
+        if(i>=4)break;
+        std::string name=p["name"]|"?", key=(p["id"]|std::string(""))+" "+name;
+        for(char &c:key)c=std::tolower(static_cast<unsigned char>(c));
+        const char *icon="\U000F0004";
+        const std::string tracker=p["id"]|"";
+        const std::string location=tracker.rfind("device_tracker.",0)==0 ? (p["state"]|"") : "";
+        if(key.find("iphonsio")!=std::string::npos||key.find("leonid")!=std::string::npos){name="Leonid";icon="\U000F01F3";}
+        else if(key.find("maxim")!=std::string::npos){name="Maxim";icon="\U000F04B8";}
+        else if(key.find("elisa")!=std::string::npos){name="Elisa";icon="\U000F1077";}
+        else if(key.find("julia")!=std::string::npos){name="Julia";icon="\U000F1A20";}
+        const std::string status=presence_label(location);
+        const int cx=left+col/8+i*col/4;
+        center(cx,170,icon,id(mdi_start_person),INK);
+        center(cx,246,fit(name,id(font_lesson),col/4-16),id(font_lesson),INK);
+        center(cx,296,fit(status,id(ui_small),col/4-16),id(ui_small),INK);
+        i++;
+      }
+      if(!people.size())text(left+22,190,"Anwesenheit unbekannt",id(ui_body),INK,col-44);
+    }
+    if(card(1,left,362,364,encoded(doc["waste"]))){
+            center(left+43,402,"\U000F0A7A",id(mdi_start),INK);
+            text(left+78,380,"Müllabfuhr",id(font_lesson),INK,col-44);
+            JsonArray bins=doc["waste"].as<JsonArray>();
+            std::string tomorrow,today;
+            std::vector<JsonObject> pickups;
+            for(JsonObject b:bins){
+              const int d=b["days"] | -1;
+              if(d<0)continue;
+              pickups.push_back(b);
+              const std::string n=b["name"] | "Abfuhr";
+              if(d==1){if(!tomorrow.empty())tomorrow+=", ";tomorrow+=n;}
+              if(d==0){if(!today.empty())today+=", ";today+=n;}
+            }
+            // The next four collections are shown even if they occur tomorrow.
+            std::stable_sort(pickups.begin(),pickups.end(),[](JsonObject a,JsonObject b){
+              return (a["days"] | 9999) < (b["days"] | 9999);
+            });
+            const std::string headline=!tomorrow.empty()?"Morgen: "+tomorrow:
+                !today.empty()?"Heute: "+today:pickups.size()?"Nächste Abfuhren":"Keine Abfuhrdaten";
+            auto hl=lines(headline,id(font_lesson),col-44);
+            for(size_t i=0;i<hl.size()&&i<2;i++)
+              text(left+22,430+i*42,hl[i],id(font_lesson),INK,col-44);
+            // Two columns x two rows; 64x70 monochrome assets with a larger row pitch.
+            int i=0;
+            for(JsonObject b:pickups){
+              if(i>=4)break;
+              const int d=b["days"] | -1;
+              const int x=left+22+(i%2)*(col/2), y=532+(i/2)*91;
+              const std::string name=b["name"] | "Abfuhr";
+              const int tx=x+78,tw=col/2-108;
+              draw_waste_icon(x+2,y+2,name);
+              text(tx,y+6,fit(name,id(ui_body),tw),id(ui_body),INK,tw);
+              text(tx,y+42,d==0?"Heute":d==1?"Morgen":("in "+std::to_string(d)+" Tagen"),
+                   id(ui_small),INK,tw);
+              ++i;
+            }
+            if(pickups.size()>4)
+              text(left+col-238,384,"+ "+std::to_string(pickups.size()-4)+" weitere",
+                   id(ui_small),DARK,211);
+          }
+          if(card(2,left,746,H-770,encoded(doc["weather"]))){
+      JsonObject w=doc["weather"].as<JsonObject>();
+      center(left+43,789,"\U000F0595",id(mdi_start),INK);
+      text(left+78,767,"Wetter",id(font_lesson),INK,col-44);
+      text(left+22,828,number(w["temperature"],1,"°C"),id(font_start_weather),INK,col-44);
+      it.printf(left+col-180,824,id(mdi_weather_medium),INK,"%s",start_weather_glyph(w["condition"] | ""));
+      text(left+22,949,condition(w["condition"]|""),id(font_lesson),INK,col-44);
+      int i=0;JsonArray days=w["days"].as<JsonArray>();
+      for(JsonObject d:days){if(i>=5)break;int y=1027+i*72;
+        text(left+22,y,d["day"]|"--",id(font_lesson),INK,65);
+        text(left+106,y,condition(d["condition"]|""),id(ui_body),INK,col-440);
+        const std::string temperatures=number(d["low"],0,"°")+" / "+number(d["high"],0,"°");
+        const int temperatures_x=left+col-284;
+        text(temperatures_x,y,temperatures,id(ui_body),INK,190);
+        center(left+col-48,y+24,start_weather_glyph(d["condition"]|""),id(mdi_start),INK);
+        if(!d["rain"].isNull())text(left+106,y+32,number(d["rain"],1,"mm"),id(ui_small),DARK,200);
+        i++;}
+      if(!days.size())text(left+22,1044,"Vorhersage noch nicht verfügbar",id(ui_body),INK,col-44);
+    }
+    if(card(3,right,104,318,encoded(doc["laundry"]))){
+      JsonArray devices=doc["laundry"].as<JsonArray>();int i=0;
+      const int appliance_w=(col-66)/3;
+      for(JsonObject a:devices){if(i>=3)break;int x=right+22+i*(appliance_w+11);
+        std::string appliance=a["name"]|"Gerät";
+        std::string appliance_key=appliance;
+        std::transform(appliance_key.begin(), appliance_key.end(), appliance_key.begin(),
+                       [](unsigned char c){ return (char)std::tolower(c); });
+        const char *appliance_icon = appliance_key.find("trockner")!=std::string::npos ? "\U000F0917" :
+                                     (appliance_key.find("geschirr")!=std::string::npos ? "\U000F0AAC" : "\U000F072A");
+        center(x+appliance_w/2,163,appliance_icon,id(mdi_start_appliance),INK);
+        text(x,229,fit(appliance,id(ui_body),appliance_w),id(ui_body),INK,appliance_w);
+        text(x,274,fit(a["state"]|"Unbekannt",id(font_lesson),appliance_w),id(font_lesson),INK,appliance_w);
+        std::string eta=a["eta"]|"";
+        text(x,324,fit(eta.empty()?"Ende: --":"ca. fertig "+eta,id(ui_body),appliance_w),id(ui_body),INK,appliance_w);
+        if(!a["progress"].isNull() && appliance.find("Geschirr") == std::string::npos){
+          const float p=std::max(0.0f,std::min(100.0f,a["progress"].as<float>()));
+          fast_rect(x,382,appliance_w,9,LIGHT);fast_rect(x,382,(int)(appliance_w*p/100.0f),9,DARK);
+        }i++;}
+      if(!devices.size())text(right+22,244,"Keine WashData-Geräte erkannt",id(ui_body),INK,col-44);
+      if(devices.size()>3)text(right+22,399,"+ "+std::to_string(devices.size()-3)+" weitere Geräte",id(ui_small),INK,col-44);
+    }
+    // Static card and units are never erased on a value-only refresh.
+    JsonObject energy=doc["energy"].as<JsonObject>();
+    const int x2=right+col/2;
+    if(!start_partial){
+      fast_rect(right,442,col,300,PAPER);it.rectangle(right,442,col,300,MID);
+      center(right+40,480,"\U000F1903",id(mdi_start),INK);
+      center(x2+32,480,"\U000F0A72",id(mdi_start),INK);
+      text(right+72,462,"Hausverbrauch",id(ui_body),INK,350);
+      text(x2+64,462,"Solarerzeugung",id(ui_body),INK,350);
+      for(int x:{right+22,x2+12}){
+        text(x+280,503,"W",id(font_start_info),INK,70);
+        text(x,567,"Heute",id(ui_small),INK,80);
+        text(x+225,567,"kWh",id(ui_small),INK,75);
+      }
+      it.line(right+22,609,right+col-22,609,INK);
+      center(right+40,651,"\U000F0238",id(mdi_start),INK);
+      text(right+72,630,"Gas",id(ui_body),INK,100);
+      text(right+352,633,"m",id(ui_body),INK,30);
+      text(right+382,622,"3",id(font_meta),INK,25); // actual raised digit; no missing superscript glyph
+      center(x2+32,651,"\U000F058C",id(mdi_start),INK);
+      text(x2+64,630,"Wasser",id(ui_body),INK,125);
+      text(x2+370,630,"L",id(ui_body),INK,40);
+      center(right+40,713,"\U000F0079",id(mdi_start),INK);
+      text(right+72,692,"Speicher",id(ui_body),INK,160);
+      text(right+352,692,"%",id(ui_body),INK,50);
+    }
+    static std::string numeric_cache[7];
+    auto number_cell=[&](int slot,int x,int y,int w,int h,JsonVariant v,int places,auto font){
+      std::string value=number(v,places,"");
+      if(start_partial && numeric_cache[slot]==value)return;
+      numeric_cache[slot]=value;fast_rect(x,y,w,h,PAPER);
+      text(x,y,value,font,INK,w);
+    };
+    number_cell(0,right+22,503,270,60,energy["home"],0,id(font_start_info));
+    number_cell(1,x2+12,503,270,60,energy["pv"],0,id(font_start_info));
+    number_cell(2,right+112,567,125,34,energy["home_today"],1,id(ui_small));
+    number_cell(3,x2+102,567,125,34,energy["pv_today"],1,id(ui_small));
+    number_cell(4,right+192,630,152,42,energy["gas"],2,id(ui_body));
+    number_cell(5,x2+204,630,156,42,energy["water_l"],0,id(ui_body));
+    number_cell(6,right+242,692,102,42,energy["battery"],0,id(ui_body));
+    // Hausstatus: a compact tile replacing the former per-room light pager.
+    JsonObject house=doc["house"].as<JsonObject>();
+    const std::string house_signature=encoded(doc["house"]);
+    if(card(5,right,762,300,house_signature)){
+      id(start_room_ids).clear();id(start_room_hitboxes).clear();
+      id(start_room_offset)=id(start_room_last)=0;
+      center(right+42,803,"\U000F02DC",id(mdi_start),INK);
+      text(right+74,779,"HAUSSTATUS",id(font_lesson),INK,col-170);
+      text(right+col-95,786," >",id(ui_body),DARK,72);
+      it.line(right+22,830,right+col-22,830,MID);
+      if(!house.isNull()){
+        JsonArray opened=house["windows"].as<JsonArray>();
+        JsonArray locks=house["locks"].as<JsonArray>();
+        JsonArray low=house["batteries"].as<JsonArray>();
+        const int light_count=house["lights"] | 0;
+        const int no_window=house["unknown_windows"] | 0;
+        const int no_lock=house["unknown_locks"] | 0;
+        int unlocked=0, locked=0, other_lock=0;
+        for(JsonObject l:locks){
+          std::string state=l["state"]|"";
+          if(state=="locked")locked++;
+          else if(state=="unlocked"||state=="open")unlocked++;
+          else if(state!="unknown"&&state!="unavailable")other_lock++;
+        }
+        std::string main=opened.size()?std::to_string(opened.size())+" Fenster/Türen offen":
+            unlocked?"Eingangstür nicht verriegelt":
+            (no_window||no_lock||other_lock)?"Hausstatus teilweise unbekannt":
+            low.size()?std::to_string(low.size())+" schwache Batterien":
+            "Keine offenen Kontakte gemeldet";
+        text(right+24,846,fit(main,id(font_lesson),col-48),id(font_lesson),INK,col-48);
+        // Two-column sensor overview, no per-room pagination.
+        const int hx=right+24,hw=col/2-37;
+        fast_rect(hx,903,hw,53,LIGHT);
+        center(hx+28,930,"\U000F111C",id(mdi_start),INK);
+        text(hx+56,913,"Kontakte: "+std::to_string(opened.size())+" offen",id(ui_body),INK,hw-62);
+        fast_rect(hx+col/2,903,hw,53,LIGHT);
+        std::string lock_text=locks.size()==0?"Schloss: keine Daten":
+            no_lock||other_lock?"Schloss: bitte prüfen":unlocked?"Schloss: entriegelt":"Schloss: verriegelt";
+        center(hx+col/2+28,930,"\U000F033E",id(mdi_start),INK);
+        text(hx+col/2+56,913,fit(lock_text,id(ui_body),hw-62),id(ui_body),INK,hw-62);
+        fast_rect(hx,965,hw,53,LIGHT);
+        center(hx+28,991,"\U000F0335",id(mdi_start),INK);
+        text(hx+56,975,"Licht an: "+std::to_string(light_count),id(ui_body),INK,hw-62);
+        fast_rect(hx+col/2,965,hw,53,LIGHT);
+        center(hx+col/2+28,991,"\U000F0079",id(mdi_start),INK);
+        text(hx+col/2+56,975,"Akku schwach: "+std::to_string(low.size()),id(ui_body),INK,hw-62);
+      }else text(right+24,865,"Hausstatus noch nicht verfügbar",id(ui_body),INK,col-48);
+    }
+    // Most recent SIX unfinished todo items, two items per row.
+    JsonObject shopping=doc["shopping"].as<JsonObject>();
+    if(card(6,right,1078,H-1102,encoded(doc["shopping"]))){
+      JsonArray items=shopping["items"].as<JsonArray>();
+      center(right+42,1120,"\U000F0110",id(mdi_start),INK);
+      text(right+74,1095,"EINKAUFSLISTE",id(font_lesson),INK,col-244);
+      text(right+col-150,1100,std::to_string(items.size())+" offen",id(ui_body),DARK,140);
+      it.line(right+22,1142,right+col-22,1142,MID);
+      int i=0;
+      for(JsonVariant item:items){if(i>=6)break;
+        const int x=right+22+(i%2)*(col/2);
+        const int y=1155+(i/2)*72;
+        const int tw=col/2-38;
+        fast_rect(x,y,tw,63,LIGHT);
+        it.rectangle(x,y,tw,63,MID);
+        it.rectangle(x+13,y+21,19,19,DARK);
+        const std::string name=item["summary"]|"";
+        text(x+45,y+12,fit(name,id(font_lesson),tw-58),id(font_lesson),INK,tw-58);
+        i++;
+      }
+      if(!items.size())text(right+24,1185,
+        (shopping["available"] | false)?"Keine offenen Einkäufe":"Einkaufsliste nicht verfügbar",
+        id(ui_body),INK,col-48);
+    }
+    return;
+  }
+  

@@ -1,0 +1,614 @@
+|
+  if(id(current_page)==7) { /* Weather renderer follows below. */ }
+  // Civil-day math avoids DST errors at school-week boundaries.
+  auto civil=[](int y,int m,int d)->int64_t{y-=m<=2;int era=(y>=0?y:y-399)/400;unsigned yo=y-era*400;unsigned doy=(153*(m+(m>2?-3:9))+2)/5+d-1;return int64_t(era)*146097+yo*365+yo/4-yo/100+doy-719468;};
+  auto date_string=[](int64_t day){auto t=esphome::ESPTime::from_epoch_utc(day*86400);char b[16];snprintf(b,sizeof(b),"%04d-%02d-%02d",t.year,t.month,t.day_of_month);return std::string(b);};
+  auto short_date=[](int64_t day){auto t=esphome::ESPTime::from_epoch_utc(day*86400);char b[20];snprintf(b,sizeof(b),"%02d.%02d.%04d",t.day_of_month,t.month,t.year);return std::string(b);};
+  auto parse_day=[&](const std::string&s)->int64_t{int y=0,m=0,d=0;if(sscanf(s.c_str(),"%d-%d-%d",&y,&m,&d)!=3||y<1970||m<1||m>12||d<1||d>31)return -1;return civil(y,m,d);};
+  const int64_t today=now.is_valid()?civil(now.year,now.month,now.day_of_month):-1;
+  auto minute=[](const std::string&s)->int{int h,m;return sscanf(s.c_str(),"%d:%d",&h,&m)==2&&h>=0&&h<24&&m>=0&&m<60?h*60+m:-1;};
+  auto stamp=[&](std::string s)->int64_t{
+    int64_t d=parse_day(s);if(d<0)return -1;if(s.size()<=10)return d*86400;
+    int h=0,m=0,sec=0;if(sscanf(s.c_str()+11,"%d:%d:%d",&h,&m,&sec)<2)return -1;
+    if(h>23||m>59||sec>59)return -1;
+    size_t tz=s.find_first_of("Zz+-",16);
+    if(tz!=std::string::npos){int offset=0;if(s[tz]!='Z'&&s[tz]!='z'){int oh=0,om=0;sscanf(s.c_str()+tz+1,"%d:%d",&oh,&om);offset=(oh*60+om)*60*(s[tz]=='-'?-1:1);}
+      auto t=esphome::ESPTime::from_epoch_local(d*86400+h*3600+m*60+sec-offset);
+      return civil(t.year,t.month,t.day_of_month)*86400+t.hour*3600+t.minute*60+t.second;
+    }
+    return d*86400+h*3600+m*60+sec;
+  };
+  auto time_text=[](int64_t s){int m=(s%86400)/60;char b[8];snprintf(b,sizeof(b),"%02d:%02d",m/60,m%60);return std::string(b);};
+  auto parse_payload=[](const std::string&s){return esphome::json::parse_json((s.empty()||s=="unknown"||s=="unavailable")?"{}":s);};
+  auto heading=[&](std::string title,std::string sub){text(20,CONTENT_TOP+8,title,id(ui_title),INK,W-40);text(20,CONTENT_TOP+58,sub,id(ui_small),INK,W-40);};
+  auto empty=[&](std::string message){text(28,CONTENT_TOP+140,message,id(ui_body),INK,W-56);};
+  struct Row{std::string title,meta,body;Color shade;bool strike=false;};
+  std::vector<Row> rows;
+  auto pager=[&](int pages,bool calendar){
+    id(list_pages)=std::max(1,pages);id(list_offset)=std::max(0,std::min(id(list_offset),id(list_pages)-1));
+    it.line(12,H-72,W-12,H-72,MID);
+    text(30,H-57,id(list_offset)>0?"Zurück":"",id(ui_body),INK,W/3-40);
+    center(W/2,H-42,calendar?"Zur Wochenansicht":("Abschnitt "+std::to_string(id(list_offset)+1)+" / "+std::to_string(id(list_pages))),id(ui_small),INK);
+    text(W-260,H-57,id(list_offset)+1<id(list_pages)?"Weiter":"",id(ui_body),INK,240);
+  };
+  auto render_rows=[&](bool calendar){
+    struct Block{Row r;std::vector<std::string> body;int height;};static std::vector<Block> blocks;static std::string cached_key;
+    std::string key=std::to_string(id(current_page))+":"+std::to_string(W);
+    for(auto&r:rows){key+="\n"+r.title+"\x1f"+r.meta+"\x1f"+r.body+"\x1f"+std::to_string(r.shade.r);}
+    if(key!=cached_key){cached_key=key;blocks.clear();
+    for(auto&r:rows){std::string full=r.body;if(width(r.meta,id(ui_small))>W-72)full=r.meta+" · "+full;if(width(r.title,id(ui_tab))>W-72)full=r.title+" · "+full;auto body=lines(full,id(ui_body),W-88);if(body.empty())body.push_back("");
+      for(size_t i=0;i<body.size();i+=6){size_t n=std::min(size_t(6),body.size()-i);Row rr=r;if(i)rr.title+=" (Fortsetzung)";
+        blocks.push_back({rr,std::vector<std::string>(body.begin()+i,body.begin()+i+n),int(96+n*39)});
+      }
+    }
+    }
+    std::vector<std::vector<int>> pages(1);int used=0;const int list_y=CONTENT_TOP+106;int available=H-list_y-92;
+    for(size_t i=0;i<blocks.size();i++){if(used+blocks[i].height>available && used>0){pages.push_back({});used=0;}pages.back().push_back(i);used+=blocks[i].height+12;}
+    pager(pages.size(),calendar);int y=list_y;
+    for(int index:pages[id(list_offset)]){auto&b=blocks[index];it.rectangle(16,y,W-32,b.height,MID);fast_rect(16,y,12,b.height,b.r.shade);fast_rect(32,y+3,W-64,4,b.r.shade);
+      text(36,y+10,b.r.title,id(ui_tab),INK,W-72);if(b.r.strike)it.line(36,y+28,W-36,y+28,INK);
+      text(36,y+49,b.r.meta,id(ui_small),INK,W-72);int yy=y+88;
+      for(auto&line:b.body){text(36,yy,line,id(ui_body),INK,W-72);yy+=39;}y+=b.height+12;
+    }
+  };
+  auto render_days=[&](){
+    struct DayBlock {std::string day, title;std::vector<std::string> body;Color shade;int height;};
+    std::vector<DayBlock> blocks;
+    for(auto &r:rows){
+      auto body=lines(r.body,id(ui_small),W-100);
+      auto title=lines(r.meta,id(ui_tab),W-100);
+      // Include all text, breaking very long daily notices across pages.
+      for(size_t i=0;i<std::max(size_t(1),body.size());i+=12){
+        std::vector<std::string> chunk(body.begin()+std::min(i,body.size()),body.begin()+std::min(i+12,body.size()));
+        std::string heading=r.meta+(i?" · Fortsetzung":"");
+        blocks.push_back({r.title,heading,chunk,r.shade,32+int(lines(heading,id(ui_tab),W-100).size())*42+int(chunk.size())*32});
+      }
+    }
+    struct DaySlot {int index,y;bool header,continued;};
+    std::vector<std::vector<DaySlot>> pages(1);
+    const int top=CONTENT_TOP+106,bottom=H-92,header_h=62;
+    int y=top;std::string last;
+    for(int i=0;i<(int)blocks.size();i++){
+      bool header=last!=blocks[i].day,continued=false;
+      if(y+blocks[i].height+(header?header_h:0)>bottom && y>top){
+        pages.push_back({});y=top;continued=last==blocks[i].day;header=true;
+      }
+      pages.back().push_back({i,y,header,continued});
+      y+=blocks[i].height+12+(header?header_h:0);last=blocks[i].day;
+    }
+    pager(pages.size(),false);
+    for(auto slot:pages[id(list_offset)]){
+      const auto &b=blocks[slot.index];int yy=slot.y;
+      if(slot.header){
+        fast_rect(20,yy,W-40,50,LIGHT);
+        text(36,yy+6,b.day+(slot.continued?" · Fortsetzung":""),id(ui_tab),INK,W-72);
+        yy+=header_h;
+      }
+      fast_rect(28,yy,6,b.height,b.shade);
+      for(auto &line:lines(b.title,id(ui_tab),W-100)){text(48,yy+8,line,id(ui_tab),INK,W-100);yy+=42;}
+      yy+=8;
+      for(auto &line:b.body){text(48,yy+8,line,id(ui_small),INK,W-100);yy+=32;}
+    }
+  };
+  if(id(current_page)==3){
+    const uint32_t grid_t0=millis();
+    uint32_t grid_step=grid_t0;
+    auto grid_mark=[&](const char* label){
+      const uint32_t t=millis();
+      ESP_LOGI("timetable_timing","%s: +%u ms, gesamt %u ms | fill=%u | text=%u",
+        label,(unsigned)(t-grid_step),(unsigned)(t-grid_t0),(unsigned)solid_rect_calls,(unsigned)text_draw_calls);
+      grid_step=t;
+    };
+    ESP_LOGI("timetable_timing","START KFG-Stundenplan");
+    if(!now.is_valid()){empty("Uhrzeit wird synchronisiert ...");grid_mark("Abbruch: Uhrzeit ungültig");return;}
+  
+    auto timetable=parse_payload(id(epaper_timetable_json).state);
+    JsonObject attrs=timetable.as<JsonObject>();
+    if(!attrs["eigener_plan"].is<JsonArray>()){
+      empty("Stundenplandaten fehlen oder sind ungültig.");
+      grid_mark("Abbruch: eigener_plan fehlt");
+      return;
+    }
+  
+    auto upper=[](std::string s){
+      for(char&c:s)c=std::toupper(static_cast<unsigned char>(c));
+      for(auto p:{std::pair<const char*,const char*>("ä","Ä"),{"ö","Ö"},{"ü","Ü"},{"ß","SS"}}){
+        size_t at=0;while((at=s.find(p.first,at))!=std::string::npos){s.replace(at,strlen(p.first),p.second);at+=strlen(p.second);}
+      }
+      return s;
+    };
+    auto lesson_badges=[&](JsonObject l){
+      std::string b;
+      if(l["badge"].is<JsonArray>()){JsonArray badges=l["badge"].as<JsonArray>();for(JsonVariant v:badges)b+=" "+upper(value(v));}
+      else b=" "+upper(value(l["badge"]));
+      for(char&c:b)if(c=='('||c==')'||c==','||c==';'||c=='/'||c=='|')c=' ';
+      return b+" ";
+    };
+    auto same_slot=[&](JsonObject a,JsonObject b){
+      std::string as=value(a["start"]),ae=value(a["end"]),bs=value(b["start"]),be=value(b["end"]);
+      if(!as.empty()||!ae.empty()||!bs.empty()||!be.empty())return as==bs&&ae==be;
+      return value(a["index"])==value(b["index"])&&value(a["duration"])==value(b["duration"]);
+    };
+    auto visible_lesson=[&](JsonObject l,JsonArray day,const std::string&w){
+      std::string b=lesson_badges(l);
+      const bool hasA=b.find(" A ")!=std::string::npos,hasB=b.find(" B ")!=std::string::npos;
+      if(hasA||hasB)return (w=="A"&&hasA)||(w=="B"&&hasB)||(w!="A"&&w!="B");
+      if(w=="A"||w=="B")for(JsonObject other:day){
+        if(!same_slot(l,other))continue;
+        std::string ob=lesson_badges(other);
+        if(ob.find(" "+w+" ")!=std::string::npos)return false;
+      }
+      return true;
+    };
+    auto free_day=[&](int64_t day){
+      if(!attrs["freie_tage"].is<JsonArray>())return false;
+      JsonArray free_days=attrs["freie_tage"].as<JsonArray>();
+      for(JsonVariant v:free_days)if(value(v)==date_string(day))return true;
+      return false;
+    };
+  
+    // KFG profile: current school week, automatically advance once Friday's
+    // final lesson has ended. A/B alternates relative to wochenbeginn.
+    const int wd=(now.day_of_week+5)%7; // Monday=0 ... Sunday=6
+    int64_t monday=today-wd;
+    int64_t anchor=parse_day(value(attrs["wochenbeginn"]));
+    if(anchor<0)anchor=monday;else anchor-=(anchor+3)%7;
+    std::string anchor_week=upper(value(attrs["wochenkennung"]));
+    auto week_for=[&](int64_t day){
+      if(anchor_week!="A"&&anchor_week!="B")return anchor_week;
+      int64_t mon=day-(day+3)%7;
+      int64_t distance=(mon-anchor)/7;
+      return (std::abs((int)distance)%2)?(anchor_week=="A"?std::string("B"):std::string("A")):anchor_week;
+    };
+    if(wd>4)monday+=7;
+    else if(wd==4){
+      JsonArray friday=attrs["eigener_plan"][4].as<JsonArray>();
+      std::string current_week=week_for(today);
+      int last_end=0,visible_count=0;bool all_valid=true;
+      if(!free_day(today))for(JsonObject lesson:friday){
+        if(!visible_lesson(lesson,friday,current_week))continue;
+        visible_count++;
+        int e=minute(value(lesson["end"]));
+        if(e<0)all_valid=false;else last_end=std::max(last_end,e);
+      }
+      if(visible_count==0||(all_valid&&now.hour*60+now.minute>=last_end))monday+=7;
+    }
+    const std::string school_week=week_for(monday);
+    grid_mark("Schulwoche ausgewählt");
+  
+    // KFG substitution profile and teacher mapping used by the Lovelace card.
+    auto subdoc=parse_payload(id(kfg_substitution_json).state);
+    auto teachers=parse_payload(id(kfg_teachers).state);
+    auto learning_doc=parse_payload(id(epaper_learning_groups_json).state);
+    auto teacher_name=[&](std::string raw){
+      if(raw.empty())return raw;
+      std::string mapped=value(teachers[raw]);
+      if(mapped.empty()&&teachers.is<JsonObject>())for(JsonPair pair:teachers.as<JsonObject>()){
+        if(upper(pair.key().c_str())==upper(raw)){mapped=value(pair.value());break;}
+      }
+      return mapped.empty()?raw:mapped;
+    };
+    auto subject_name=[&](std::string code){
+      if(code.empty())return code;
+      for(const char* key:{"eigener_plan","eigener_grundplan"})if(attrs[key].is<JsonArray>()){
+        JsonArray plans=attrs[key].as<JsonArray>();
+        for(JsonArray day:plans)for(JsonObject lesson:day){
+          if(upper(value(lesson["subject"]))==upper(code)||upper(value(lesson["fach"]))==upper(code)){
+            std::string full=value(lesson["fach"]);if(!full.empty())return full;
+          }
+        }
+      }
+      const std::pair<const char*,const char*> subjects[]={{"E","Englisch"},{"E1","Englisch 1"},{"E2","Englisch 2"},{"D","Deutsch"},{"M","Mathematik"},{"SP","Sport"},{"BIO","Biologie"},{"CH","Chemie"},{"F","Französisch"},{"F2","Französisch 2"},{"L","Latein"},{"L1","Latein 1"},{"L2","Latein 2"},{"GE","Geschichte"},{"PW","Politik und Wirtschaft"},{"GR","Griechisch"},{"ETH","Ethik"},{"REV","Evangelische Religion"},{"RKA","Katholische Religion"},{"KU","Kunst"},{"PH","Physik"},{"MUS","Musik"},{"MU","Musik"},{"DSP","Darstellendes Spiel"}};
+      for(auto item:subjects)if(upper(code)==item.first)return std::string(item.second);
+      return code;
+    };
+    auto change_label=[&](std::string art){
+      const std::pair<const char*,const char*> labels[]={{"Betr","Betreuung"},{"Vertr","Vertretung"},{"Entf","Entfall"},{"Taus","Tausch"},{"Freis","Freistunde"},{"Raum","Raumänderung"},{"Statt-Vertretung","Statt-Vertretung"},{"Paus","Pausenaufsicht"},{"SES","Sonderunterricht"},{"Vtr. ohne Lehrer","Vertretung ohne Lehrer"}};
+      for(auto item:labels)if(art==item.first)return std::string(item.second);
+      return art;
+    };
+    int64_t reference=parse_day(value(subdoc["today"]));if(reference<0)reference=today;
+    int refyear=esphome::ESPTime::from_epoch_utc(reference*86400).year;
+    auto kfg_day=[&](std::string s){
+      int64_t direct=parse_day(s);if(direct>=0)return direct;
+      int d=0,m=0,y=0;int count=sscanf(s.c_str(),"%d.%d.%d",&d,&m,&y);
+      if(count<2||m<1||m>12||d<1||d>31)return int64_t(-1);
+      if(count==3&&y>0)return civil(y<100?2000+y:y,m,d);
+      int64_t best=civil(refyear,m,d);
+      for(int yr:{refyear-1,refyear+1}){int64_t candidate=civil(yr,m,d);if(std::abs(candidate-reference)<std::abs(best-reference))best=candidate;}
+      return best;
+    };
+    auto substitution_day=[&](int64_t target)->JsonObject{
+      if(!subdoc["weeks"].is<JsonArray>())return JsonObject();
+      JsonArray weeks=subdoc["weeks"].as<JsonArray>();
+      for(JsonObject week:weeks){
+        if(!week["days"].is<JsonArray>())continue;
+        JsonArray week_days=week["days"].as<JsonArray>();
+        for(JsonObject day:week_days)if(kfg_day(value(day["date"]))==target)return day;
+      }
+      return JsonObject();
+    };
+    auto entry_period=[&](JsonObject entry,int period){
+      if(entry["stunden"].is<JsonArray>()){JsonArray periods=entry["stunden"].as<JsonArray>();for(JsonVariant v:periods)if(atoi(value(v).c_str())==period)return true;}
+      std::string raw=value(entry["stunde"]);if(raw.empty()&&entry["stunden"].is<const char*>())raw=value(entry["stunden"]);
+      int nums[8],n=0,current=-1;
+      for(char c:raw){if(std::isdigit(static_cast<unsigned char>(c))){if(current<0)current=0;current=current*10+(c-'0');}else if(current>=0){if(n<8)nums[n++]=current;current=-1;}}
+      if(current>=0&&n<8)nums[n++]=current;
+      if(n==2&&raw.find_first_of("-–—")!=std::string::npos){int a=std::min(nums[0],nums[1]),b=std::max(nums[0],nums[1]);return period>=a&&period<=b;}
+      for(int i=0;i<n;i++)if(nums[i]==period)return true;
+      return n==0;
+    };
+    auto entry_class_matches=[&](JsonObject entry){
+      std::string classes=value(entry["klasse"]);if(classes.empty())return true;
+      const std::string wanted=upper("${school_class}");
+      std::string token;
+      auto matches=[&](){return !token.empty()&&upper(token)==wanted;};
+      for(char c:classes){
+        if(c==','||c==';'||c=='/'||c=='|'){if(matches())return true;token.clear();}
+        else if(!std::isspace(static_cast<unsigned char>(c)))token+=c;
+      }
+      return matches();
+    };
+    auto entry_subject_matches=[&](JsonObject entry,JsonObject raw){
+      std::string original=value(entry["fach_original"]);if(original.empty())original=value(entry["fach_alt"]);if(original.empty())original=value(entry["subject_original"]);
+      std::string current=value(entry["fach"]);if(current.empty())current=value(entry["subject"]);
+      const std::string lesson_code=upper(value(raw["subject"]));
+      const std::string lesson_name=upper(value(raw["fach"]));
+      // KFG entries normally contain the original subject code. Prefer it;
+      // only fall back to the current subject when no original code exists.
+      std::string candidate=!original.empty()?original:current;
+      if(candidate.empty())return false;
+      const std::string wanted=upper(candidate);
+      return (!lesson_code.empty()&&wanted==lesson_code)||(!lesson_name.empty()&&wanted==lesson_name);
+    };
+    auto find_entry=[&](JsonObject raw,int64_t date)->JsonObject{
+      JsonObject day=substitution_day(date);if(day.isNull()||!day["entries"].is<JsonArray>())return JsonObject();
+      JsonArray entries=day["entries"].as<JsonArray>();
+      const int first_period=atoi(value(raw["index"]).c_str());
+      const int duration=std::max(1,atoi(value(raw["duration"]).c_str()));
+      for(JsonObject entry:entries){
+        if(!entry_class_matches(entry))continue;
+        bool overlaps=false;
+        for(int period=first_period;period<first_period+duration;period++)if(entry_period(entry,period)){overlaps=true;break;}
+        if(!overlaps)continue;
+        // Never apply a substitution from another subject merely because it is
+        // the only entry in the same period. This prevents e.g. RKA/Entfall
+        // from being attached to ETH on 22.09.
+        if(!entry_subject_matches(entry,raw))continue;
+        ESP_LOGD("timetable_match","KFG-Zuordnung: %s Std %d-%d Fach %s -> %s / %s",
+                 date_string(date).c_str(),first_period,first_period+duration-1,
+                 value(raw["subject"]).c_str(),value(entry["art"]).c_str(),value(entry["vertreter"]).c_str());
+        return entry;
+      }
+      return JsonObject();
+    };
+    // SPH Lerngruppen: Arbeiten/Klausuren/Lernkontrollen werden direkt dem
+    // passenden Unterrichtsblock zugeordnet. Matching: Datum + Stunden + Fach.
+    auto subject_key=[&](std::string raw){
+      raw=upper(raw);std::string key;key.reserve(raw.size());
+      for(unsigned char c:raw){
+        if((c>='0'&&c<='9')||c==' '||c=='-'||c=='_'||c=='.'||c=='/'||c=='('||c==')')continue;
+        key.push_back(static_cast<char>(c));
+      }
+      return key;
+    };
+    auto control_period=[&](JsonObject control,int period){
+      if(control["stunden"].is<JsonArray>()){
+        JsonArray periods=control["stunden"].as<JsonArray>();
+        for(JsonVariant v:periods)if(atoi(value(v).c_str())==period)return true;
+        return false;
+      }
+      std::string raw=value(control["stunden_text"]);if(raw.empty())raw=value(control["stunden"]);
+      int current=-1;
+      for(char c:raw){
+        if(std::isdigit(static_cast<unsigned char>(c))){if(current<0)current=0;current=current*10+(c-'0');}
+        else if(current>=0){if(current==period)return true;current=-1;}
+      }
+      return current==period;
+    };
+    auto control_subject_matches=[&](JsonObject control,JsonObject raw){
+      std::string wanted=value(control["fach"]);if(wanted.empty())wanted=value(control["kurs"]);
+      if(wanted.empty())return false;
+      const std::string a=subject_key(wanted);
+      std::string lesson=value(raw["fach"]);if(lesson.empty())lesson=subject_name(value(raw["subject"]));
+      const std::string b=subject_key(lesson);
+      if(a.empty()||b.empty())return false;
+      if(a==b)return true;
+      // Course suffixes such as "Englisch 1" / "Französisch 2" are not
+      // repeated in the Lerngruppen entry. Require a useful common prefix.
+      return a.size()>=4&&b.size()>=4&&(a.rfind(b,0)==0||b.rfind(a,0)==0);
+    };
+    auto find_control=[&](JsonObject raw,int64_t date)->JsonObject{
+      if(!learning_doc["leistungskontrollen"].is<JsonArray>())return JsonObject();
+      JsonArray controls=learning_doc["leistungskontrollen"].as<JsonArray>();
+      const int first_period=atoi(value(raw["index"]).c_str());
+      const int duration=std::max(1,atoi(value(raw["duration"]).c_str()));
+      const std::string wanted_date=date_string(date);
+      for(JsonObject control:controls){
+        if(value(control["datum"])!=wanted_date)continue;
+        bool overlaps=false;
+        for(int period=first_period;period<first_period+duration;period++)if(control_period(control,period)){overlaps=true;break;}
+        if(!overlaps||!control_subject_matches(control,raw))continue;
+        ESP_LOGD("timetable_match","Leistungskontrolle: %s Std %d-%d Fach %s -> %s",
+                 wanted_date.c_str(),first_period,first_period+duration-1,
+                 value(raw["fach"]).c_str(),value(control["art"]).c_str());
+        return control;
+      }
+      return JsonObject();
+    };
+  
+    // KFG period times. They are also updated from timetable data below, so
+    // the renderer remains correct if the source contains slightly different times.
+    int slot_start[9]={0,475,520,585,630,700,745,830,875};
+    int slot_end[9]  ={0,520,565,630,675,745,790,875,920};
+    for(int d=0;d<5;d++){
+      int64_t date=monday+d;if(free_day(date))continue;
+      JsonArray day=attrs["eigener_plan"][d].as<JsonArray>();
+      for(JsonObject lesson:day){if(!visible_lesson(lesson,day,school_week))continue;
+        int index=atoi(value(lesson["index"]).c_str());int duration=std::max(1,atoi(value(lesson["duration"]).c_str()));
+        int start=minute(value(lesson["start"])),end=minute(value(lesson["end"]));
+        if(index<1||index>8||start<0||end<=start)continue;
+        double length=double(end-start)/duration;
+        for(int off=0;off<duration&&index+off<=8;off++){slot_start[index+off]=int(std::lround(start+length*off));slot_end[index+off]=int(std::lround(start+length*(off+1)));}
+      }
+    }
+    grid_mark("KFG-Daten und Stundenzeiten vorbereitet");
+  
+    // Geometry mirrors sph-stundenplan-grid-card: grey header/period column,
+    // five equal weekday columns and eight periods. Calendar week and A/B school
+    // week share the upper-left header cell, so no separate week row is needed.
+    const int left=2,right=W-2,period_w=282;
+    const int header_top=CONTENT_TOP+6,header_h=112,body_top=header_top+header_h,body_bottom=H-8;
+    const int grid_left=left+period_w,day_w=(right-grid_left)/5,body_h=body_bottom-body_top;
+    const Color GRID(188,188,188),META(96,96,96),HEADER(208,208,208);
+    // ISO calendar week: the ISO year/week is defined by the Thursday of this Monday-based week.
+    auto iso_thursday=esphome::ESPTime::from_epoch_utc((monday+3)*86400);
+    int64_t jan4=civil(iso_thursday.year,1,4);
+    int jan4_wd=int((jan4+3)%7);if(jan4_wd<0)jan4_wd+=7;
+    int64_t week1_monday=jan4-jan4_wd;
+    int calendar_week=int((monday-week1_monday)/7)+1;
+    char kwbuf[16];snprintf(kwbuf,sizeof(kwbuf),"KW %02d",calendar_week);
+    fast_rect(left,header_top,period_w,header_h,HEADER);it.rectangle(left,header_top,period_w,header_h,GRID);
+    center(left+period_w/2,header_top+32,kwbuf,id(font_small),INK);
+    std::string school_week_text="Woche";
+    if(!school_week.empty())school_week_text+=" "+school_week;
+    center(left+period_w/2,header_top+80,school_week_text,id(font_small),INK);
+    const char* day_names[]={"Montag","Dienstag","Mittwoch","Donnerstag","Freitag"};
+    for(int d=0;d<5;d++){
+      int x=grid_left+d*day_w;int x2=d==4?right:x+day_w;int w=x2-x;
+      fast_rect(x,header_top,w,header_h,HEADER);it.rectangle(x,header_top,w,header_h,GRID);
+      auto date=esphome::ESPTime::from_epoch_utc((monday+d)*86400);
+      center(x+w/2,header_top+34,day_names[d],id(font_day),INK);
+      char dbuf[20];snprintf(dbuf,sizeof(dbuf),"%02d.%02d.%04d",date.day_of_month,date.month,date.year);
+      center(x+w/2,header_top+84,dbuf,id(ui_small),INK);
+    }
+    for(int p=1;p<=8;p++){
+      int y=body_top+(p-1)*body_h/8,y2=body_top+p*body_h/8,h=y2-y;
+      fast_rect(left,y,period_w,h,HEADER);it.rectangle(left,y,period_w,h,GRID);
+      center(left+period_w/2,y+40,std::to_string(p)+".",id(font_small),INK);
+      char tbuf[64];snprintf(tbuf,sizeof(tbuf),"%02d:%02d – %02d:%02d",slot_start[p]/60,slot_start[p]%60,slot_end[p]/60,slot_end[p]%60);
+      center(left+period_w/2,y+h-35,tbuf,id(ui_small),INK);
+      for(int d=0;d<5;d++){int x=grid_left+d*day_w,x2=d==4?right:x+day_w;it.rectangle(x,y,x2-x,h,GRID);}
+    }
+    grid_mark("Grundraster gezeichnet");
+  
+    auto draw_badge=[&](int cx,int y,const std::string&label,Color shade,int maxw){
+      std::string shown=fit(label,id(font_meta),maxw-20);int bw=std::min(maxw,width(shown,id(font_meta))+24);int bh=34;
+      fast_rect(cx-bw/2,y,bw,bh,shade);center(cx,y+bh/2,shown,id(font_meta),PAPER);return bh;
+    };
+    auto draw_card=[&](int x,int y,int w,int h,bool highlighted){
+      const int card_margin=5;
+      const int shadow=6;
+      const int card_x=x+card_margin;
+      const int card_y=y+card_margin;
+      const int card_w=std::max(12,w-(card_margin*2)-shadow);
+      const int card_h=std::max(12,h-(card_margin*2)-shadow);
+      const Color shadow_color(176,176,176);
+      const Color border_color(88,88,88);
+      // Jede Stundenplanzelle wirkt wie eine leicht angehobene Kachel.
+      fast_rect(card_x+card_w,card_y+shadow,shadow,std::max(1,card_h-shadow),shadow_color);
+      fast_rect(card_x+shadow,card_y+card_h,std::max(1,card_w-shadow),shadow,shadow_color);
+      // Leistungskontrollen werden zusätzlich mit einer sehr hellen Graustufe abgesetzt.
+      fast_rect(card_x,card_y,card_w,card_h,highlighted?Color(224,224,224):PAPER);
+      it.rectangle(card_x,card_y,card_w,card_h,border_color);
+      if(card_w>18&&card_h>18)it.rectangle(card_x+2,card_y+2,card_w-4,card_h-4,Color(196,196,196));
+    };
+    auto draw_lesson=[&](JsonObject raw,int64_t date,int x,int y,int w,int h){
+      std::string subject=value(raw["fach"]);if(subject.empty())subject=subject_name(value(raw["subject"]));if(subject.empty())subject="Unterricht";
+      std::string teacher=teacher_name(value(raw["teacher"]));std::string room=value(raw["room"]);
+      std::string original_subject,change,control_art;bool cancelled=false;
+      JsonObject entry=find_entry(raw,date);
+      if(!entry.isNull()){
+        std::string art=change_label(value(entry["art"]));if(art.empty())art=value(entry["art_lang"]);if(art.empty())art="Vertretung";
+        cancelled=(entry["entfall"]|false)||art=="Entfall"||art=="Freistunde";
+        std::string new_code=value(entry["fach"]);if(new_code.empty())new_code=value(entry["subject"]);if(new_code.empty())new_code=value(raw["subject"]);
+        std::string old_code=value(entry["fach_original"]);if(old_code.empty())old_code=value(entry["fach_alt"]);if(old_code.empty())old_code=value(entry["subject_original"]);if(old_code.empty())old_code=value(raw["subject"]);
+        const bool changed_subject=!cancelled&&!new_code.empty()&&!old_code.empty()&&upper(new_code)!=upper(old_code);
+        if(!cancelled&&!new_code.empty())subject=subject_name(new_code);
+        if(changed_subject){original_subject=subject_name(old_code);change="Fachwechsel";}else change=art;
+        std::string repl=value(entry["vertreter"]);if(repl.empty())repl=value(entry["lehrer_nach"]);if(repl.empty())repl=value(entry["lehrer"]);if(repl.empty())repl=value(entry["teacher"]);
+        if(!repl.empty())teacher=teacher_name(repl);
+        std::string new_room=value(entry["raum"]);if(new_room.empty())new_room=value(entry["room"]);if(!new_room.empty())room=new_room;
+      }
+      JsonObject control=find_control(raw,date);
+      if(!control.isNull()){control_art=value(control["art"]);if(control_art.empty())control_art="Leistungskontrolle";}
+      const bool changed=!change.empty();
+      const bool has_control=!control_art.empty();
+      // Einheitlicher Kartenstil für alle Unterrichtszellen; Leistungskontrollen
+      // erhalten zusätzlich eine dezente graue Innenfläche.
+      draw_card(x,y,w,h,has_control);
+      if(changed){Color stripe=cancelled?Color(72,72,72):Color(128,128,128);fast_rect(x+12,y+18,6,std::max(8,h-36),stripe);}
+      int maxw=w-34;int total=40;
+      if(!original_subject.empty())total+=24;
+      if(changed)total+=34;
+      if(has_control)total+=34;
+      if(!teacher.empty())total+=25;
+      if(!room.empty())total+=25;
+      int yy=y+std::max(4,(h-total)/2);
+      auto sf=width(subject,id(font_lesson))<=maxw?id(font_lesson):id(font_small);
+      std::string shown=fit(subject,sf,maxw);center(x+w/2,yy+18,shown,sf,INK);
+      if(cancelled){int sw=width(shown,sf);it.line(x+w/2-sw/2,yy+18,x+w/2+sw/2,yy+18,INK);}
+      yy+=40;
+      if(!original_subject.empty()){center(x+w/2,yy+11,fit("statt "+original_subject,id(font_meta),maxw),id(font_meta),INK);yy+=24;}
+      if(changed){
+        Color badge=cancelled?Color(80,80,80):(change=="Vertretung"?Color(120,120,120):(change=="Sonderunterricht"?Color(144,144,144):Color(104,104,104)));
+        draw_badge(x+w/2,yy,change,badge,maxw);yy+=34;
+      }
+      if(has_control){
+        Color badge=(control_art=="Arbeit"||control_art=="Klausur")?Color(72,72,72):Color(112,112,112);
+        draw_badge(x+w/2,yy,control_art,badge,maxw);yy+=34;
+      }
+      if(!teacher.empty()){center(x+w/2,yy+11,fit(teacher,id(font_meta),maxw),id(font_meta),META);yy+=25;}
+      if(!room.empty()){center(x+w/2,yy+11,fit("Raum: "+room,id(font_meta),maxw),id(font_meta),META);yy+=25;}
+    };
+  
+    bool covered[5][9]={{false}};
+    for(int d=0;d<5;d++){
+      const int64_t date=monday+d;
+      JsonArray day=attrs["eigener_plan"][d].as<JsonArray>();
+      int x=grid_left+d*day_w,x2=d==4?right:x+day_w,w=x2-x;
+      const bool day_off=free_day(date);
+      for(int p=1;p<=8;p++){
+        if(covered[d][p])continue;
+        int y=body_top+(p-1)*body_h/8,y_next=body_top+p*body_h/8;
+        JsonObject starts[3];int count=0,span=1;
+        if(!day_off)for(JsonObject lesson:day){
+          if(!visible_lesson(lesson,day,school_week))continue;
+          int index=atoi(value(lesson["index"]).c_str());if(index!=p)continue;
+          if(count<3)starts[count++]=lesson;
+          span=std::max(span,std::max(1,atoi(value(lesson["duration"]).c_str())));
+        }
+        span=std::min(span,9-p);
+        if(count==0){center(x+w/2,(y+y_next)/2,"–",id(ui_body),META);continue;}
+        int y2=body_top+(p-1+span)*body_h/8,h=y2-y;
+        for(int q=p+1;q<p+span&&q<=8;q++)covered[d][q]=true;
+        if(count==1){draw_lesson(starts[0],date,x,y,w,h);}
+        else{
+          int inner_h=h/count;
+          for(int i=0;i<count;i++){
+            int sy=y+i*inner_h,sy2=i==count-1?y+h:sy+inner_h;
+            draw_lesson(starts[i],date,x,sy,w,sy2-sy);
+          }
+        }
+      }
+    }
+    grid_mark("Unterricht, KFG-Änderungen und Leistungskontrollen gezeichnet");
+    ESP_LOGI("timetable_timing","ENDE KFG-Stundenplan: %u ms gesamt",(unsigned)(millis()-grid_t0));
+    return;
+  }
+  if(id(current_page)==6){
+    heading("Die nächsten Arbeiten","Leistungskontrollen aus SPH Lerngruppen");
+    auto doc=parse_payload(id(epaper_learning_groups_json).state);
+    if(!doc["leistungskontrollen"].is<JsonArray>()){empty("Lerngruppendaten fehlen oder sind ungültig.");return;}
+    JsonArray kontrollen=doc["leistungskontrollen"].as<JsonArray>();
+    std::vector<JsonObject> items;for(JsonObject item:kontrollen){int64_t day=parse_day(value(item["datum"]));if(day<0||today<0||day>=today)items.push_back(item);}
+    std::stable_sort(items.begin(),items.end(),[&](JsonObject a,JsonObject b){return value(a["datum"])+value(a["start"])<value(b["datum"])+value(b["start"]);});
+    struct ExamCard { std::string date; std::vector<std::string> title, details; int height; };
+    std::vector<ExamCard> cards;
+    const int gap=24, card_w=(W-40-gap)/2, inner_w=card_w-40;
+    const char* weekdays[]={"Sonntag","Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag"};
+    for(auto item:items){
+      const int64_t day=parse_day(value(item["datum"]));
+      std::string title=value(item["summary"]);
+      if(title.empty())title=value(item["art"])+": "+value(item["kurs"]);
+      std::string date="Datum offen";
+      if(day>=0)date=std::string(weekdays[(day+4)%7])+", "+short_date(day);
+      std::string hours;
+      if(item["stunden"].is<JsonArray>()){
+        JsonArray hour_values=item["stunden"].as<JsonArray>();
+        for(JsonVariant v:hour_values)hours+=(hours.empty()?"":", ")+value(v);
+      }else hours=value(item["stunden"]);
+      std::string detail;
+      if(!hours.empty())detail="Stunde: "+hours;
+      const std::string teacher=value(item["lehrkraft"]);
+      if(!teacher.empty())detail+=(detail.empty()?"":" · ")+std::string("Lehrkraft: ")+teacher;
+      auto title_lines=lines(title,id(ui_tab),inner_w);
+      auto detail_lines=lines(detail,id(ui_small),inner_w);
+      // Split unusually long titles into continuation cards instead of clipping.
+      for(size_t offset=0;offset<std::max(size_t(1),title_lines.size());offset+=12){
+        size_t end=std::min(title_lines.size(),offset+12);
+        std::vector<std::string> chunk(title_lines.begin()+std::min(offset,title_lines.size()),title_lines.begin()+end);
+        cards.push_back({date+(offset?" · Fortsetzung":""),chunk,detail_lines,88+int(chunk.size())*42+int(detail_lines.size())*32});
+      }
+    }
+    struct ExamSlot {int index,x,y;};
+    std::vector<std::vector<ExamSlot>> pages(1);
+    const int top=CONTENT_TOP+106,bottom=H-92;
+    int column=0,y=top;
+    for(int i=0;i<(int)cards.size();i++){
+      if(y+cards[i].height>bottom && y>top){column++;y=top;}
+      if(column==2){pages.push_back({});column=0;}
+      pages.back().push_back({i,20+column*(card_w+gap),y});y+=cards[i].height+18;
+    }
+    pager(pages.size(),false);
+    for(auto slot:pages[id(list_offset)]){
+      const auto &card=cards[slot.index];
+      it.rectangle(slot.x,slot.y,card_w,card.height,MID);
+      fast_rect(slot.x,slot.y,5,card.height,INK);
+      text(slot.x+20,slot.y+14,card.date,id(ui_small),INK,inner_w);
+      int yy=slot.y+54;
+      for(auto &line:card.title){text(slot.x+20,yy,line,id(ui_tab),INK,inner_w);yy+=42;}
+      yy+=12;
+      for(auto &line:card.details){text(slot.x+20,yy,line,id(ui_small),INK,inner_w);yy+=32;}
+    }
+    if(cards.empty())empty("Keine kommenden Arbeiten vorhanden.");
+    return;
+  }
+  
+  if(id(current_page)==5){
+    heading("Meine Hausaufgaben","Offene Aufgaben aus SPH Mein Unterricht");
+    auto doc=parse_payload(id(epaper_homework_json).state);
+    if(!doc["aufgaben"].is<JsonArray>()){empty("Hausaufgabendaten fehlen oder sind ungültig.");return;}
+    JsonArray aufgaben=doc["aufgaben"].as<JsonArray>();
+    std::vector<JsonObject> tasks;for(JsonObject item:aufgaben)if(!(item["erledigt"]|false))tasks.push_back(item);
+    std::stable_sort(tasks.begin(),tasks.end(),[&](JsonObject a,JsonObject b){return value(a["datum"])<value(b["datum"]);});
+    for(auto item:tasks){std::string subject=value(item["fach"]),topic=value(item["thema"]),date=value(item["datum"]);int64_t day=parse_day(date);
+      rows.push_back({subject+(topic.empty()?"":" · "+topic),(day>=0?"Datum: "+short_date(day):"Ohne Datum")+" · "+value(item["lehrer"]),value(item["aufgabe"]),rows.size()%2?LIGHT:MID});
+    }
+    if(rows.empty())empty("Keine unerledigten Hausaufgaben.");render_rows(false);return;
+  }
+  if(id(current_page)==4){
+    heading("KFG Vertretungsplan · Klasse ${school_class}","Veröffentlichte Tage ab heute · Entfall dunkel, Vertretung mittel, sonstige Änderungen hell");
+    if(!now.is_valid()){empty("Uhrzeit wird synchronisiert ...");return;}
+    auto doc=parse_payload(id(kfg_substitution_json).state);
+    if(!doc["weeks"].is<JsonArray>()){empty("KFG-Daten fehlen: ${kfg_substitution_entity} / Attribut json");return;}
+    auto teachers=parse_payload(id(kfg_teachers).state);
+    auto upper=[](std::string s){for(char&c:s)c=std::toupper(static_cast<unsigned char>(c));
+      for(auto p:{std::pair<const char*,const char*>("ä","Ä"),{"ö","Ö"},{"ü","Ü"},{"ß","SS"}}){size_t at=0;while((at=s.find(p.first,at))!=std::string::npos){s.replace(at,strlen(p.first),p.second);at+=strlen(p.second);}}return s;};
+    auto teacher=[&](std::string s){std::string name=value(teachers[s]);if(name.empty())for(JsonPair p:teachers.as<JsonObject>())if(upper(p.key().c_str())==upper(s)){name=value(p.value());break;}return name.empty()?s:name+" ("+s+")";};
+    auto subject_name=[&](std::string s){const std::pair<const char*,const char*> subjects[]={{"E","Englisch"},{"E1","Englisch"},{"E2","Englisch"},{"D","Deutsch"},{"M","Mathematik"},{"SP","Sport"},{"BIO","Biologie"},{"CH","Chemie"},{"F","Französisch"},{"F2","Französisch"},{"L","Latein"},{"L1","Latein"},{"L2","Latein"},{"GE","Geschichte"},{"PW","Politik und Wirtschaft"},{"GR","Griechisch"},{"ETH","Ethik"},{"REV","Evangelische Religion"},{"RKA","Katholische Religion"},{"KU","Kunst"},{"PH","Physik"},{"MUS","Musik"},{"MU","Musik"},{"DSP","Darstellendes Spiel"}};for(auto p:subjects)if(upper(s)==p.first)return std::string(p.second);return s;};
+    auto label=[](std::string s){const std::pair<const char*,const char*> labels[]={{"Betr","Betreuung"},{"Vertr","Vertretung"},{"Entf","Entfall"},{"Taus","Tausch"},{"Freis","Freistunde"},{"Raum","Raumänderung"},{"Paus","Pausenaufsicht"},{"SES","Sonderunterricht"},{"Vtr. ohne Lehrer","Vertretung ohne Lehrer"}};for(auto p:labels)if(s==p.first)return std::string(p.second);return s;};
+    // KFG provides DD.MM. dates. Infer the year nearest generated/today to handle December/January.
+    int64_t reference=parse_day(value(doc["today"]));if(reference<0)reference=today;
+    int refyear=esphome::ESPTime::from_epoch_utc(reference*86400).year;
+    auto kfg_day=[&](std::string s){int64_t direct=parse_day(s);if(direct>=0)return direct;int d=0,m=0,y=0;int count=sscanf(s.c_str(),"%d.%d.%d",&d,&m,&y);if(count<2||m<1||m>12||d<1||d>31)return int64_t(-1);if(count==3&&y>0)return civil(y<100?2000+y:y,m,d);int64_t best=civil(refyear,m,d);for(int yr:{refyear-1,refyear+1}){int64_t candidate=civil(yr,m,d);if(std::abs(candidate-reference)<std::abs(best-reference))best=candidate;}return best;};
+    struct Day{int64_t date;JsonObject day;std::string week;};std::vector<Day> days;
+    JsonArray published_weeks=doc["weeks"].as<JsonArray>();
+    for(JsonObject week:published_weeks){JsonArray published_days=week["days"].as<JsonArray>();for(JsonObject day:published_days){int64_t d=kfg_day(value(day["date"]));if(d>=today)days.push_back({d,day,value(week["week_type"])});}}
+    std::stable_sort(days.begin(),days.end(),[](const Day&a,const Day&b){return a.date<b.date;});
+    // Flatten nested news arrays/objects iteratively; never discard published daily notices.
+    auto news_text=[&](JsonVariant input){std::string out;std::vector<JsonVariant> pending{input};while(!pending.empty()){auto v=pending.back();pending.pop_back();if(v.is<JsonArray>()){auto a=v.as<JsonArray>();for(int i=int(a.size())-1;i>=0;i--)pending.push_back(a[i]);}else if(v.is<JsonObject>()){for(JsonPair pair:v.as<JsonObject>())pending.push_back(pair.value());}else{std::string s=value(v);if(!s.empty())out+=(out.empty()?"":" · ")+s;}}return out;};
+    for(auto&d:days){std::string title=value(d.day["weekday"])+" "+short_date(d.date)+" · "+d.week;
+      JsonVariant news_input=d.day["news"];
+      if(news_input.is<JsonArray>()){
+        JsonArray notices=news_input.as<JsonArray>();
+        for(JsonVariant notice:notices){
+          std::string news=news_text(notice);if(!news.empty())rows.push_back({title,"Nachricht des Tages",news,LIGHT});
+        }
+      }else{
+        std::string news=news_text(news_input);if(!news.empty())rows.push_back({title,"Nachricht des Tages",news,LIGHT});
+      }
+      int n=0;JsonArray entries=d.day["entries"].as<JsonArray>();for(JsonObject e:entries){
+        std::string art=label(value(e["art"]));bool cancelled=art=="Entfall"||art=="Freistunde"||(e["entfall"]|false);
+        std::string subject=subject_name(value(e["fach"])),oldsubject=subject_name(value(e["fach_original"]));if(oldsubject.empty())oldsubject=subject_name(value(e["fach_alt"]));
+        if(!oldsubject.empty()&&oldsubject!=subject)subject=oldsubject+" -> "+subject;
+        std::string body="Lehrer: "+teacher(value(e["lehrer_original"]))+" · Vertretung: "+teacher(value(e["vertreter"]))+" · Raum: "+value(e["raum"]);
+        std::string note=value(e["hinweis"]);if(!note.empty())body+=" · "+note;
+        rows.push_back({title,"Stunde "+value(e["stunde"])+" · "+subject+" · "+art,body,cancelled?DARK:(art=="Vertretung"?MID:LIGHT),false});n++;
+      }
+      if(!n)rows.push_back({title,"Keine Vertretungen","Für diesen veröffentlichten Tag sind keine Änderungen gemeldet.",LIGHT});
+    }
+    if(days.empty())empty("Noch kein aktueller oder zukünftiger KFG-Plantag veröffentlicht.");
+    render_days();return;
+  }
+  

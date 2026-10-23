@@ -1,0 +1,34 @@
+display:
+- platform: it8951
+  id: epaper
+  auto_clear_enabled: false
+  spi_id: epaper_spi_bus
+  model: seeed-reterminal-e1003
+  vcom: 1400
+  vcom_register: 2
+  force_temperature: 25
+  sleep_when_done: false  # epaper_refresh polls LUTAFSR while the controller is awake.
+  update_interval: never
+  # Keep automatic count-triggered cleans rare. Explicit full redraws happen
+  # at every boot/wake and after 60min awake; normal rendering remains grayscale GC16.
+  full_update_every: 255
+  grayscale: true
+  dithering: false
+  update_mode: GC16
+  transform:
+    mirror_x: true
+    mirror_y: false
+    swap_xy: false
+  rotation: 0
+  lambda: !include
+    file: render.yaml
+    vars:
+      render_clock: !include render/clock.yaml
+      render_common: !include render/common.yaml
+      render_home: !include render/home.yaml
+      render_start: !include render/start.yaml
+      render_maxim: !include render/maxim.yaml
+      render_elisa: !include render/elisa.yaml
+      render_school: !include render/school.yaml
+      render_weather: !include render/weather.yaml
+

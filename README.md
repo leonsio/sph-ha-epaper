@@ -395,3 +395,59 @@ Dieses Projekt ist ein eigenständiges ESPHome-Projekt und keine offizielle Erwe
 Die Schulportal-Daten werden über das separate Projekt `sph-ha` bereitgestellt:
 
 https://github.com/leonsio/sph-ha
+
+
+## reTerminal E1003: modulare Konfiguration und Display-Reinigung
+
+`sph-reterminal-e1003.yaml` enthält nur noch die benutzerspezifischen Substitutionen
+und die Pakete unter `packages/e1003/`. Bestehende Entity-IDs bleiben erhalten.
+Beim Aktualisieren müssen die neuen Paketdateien und beide lokalen Komponenten
+mit übernommen werden; nur die Hauptdatei auszutauschen reicht nicht.
+
+| Dateien | Aufgabe |
+| --- | --- |
+| `core.yaml`, `assets.yaml` | Boot, Plattform, Verbindungen, Schriftarten und Bilder |
+| `homeassistant.yaml`, `state.yaml` | Sensoren und interner Zustand |
+| `settings.yaml`, `input.yaml`, `schedule.yaml` | Einstellungen, Bedienung und Zeitsteuerung |
+| `runtime.yaml`, `screensaver.yaml` | Allgemeine Abläufe bzw. Screensaver-Abläufe |
+| `display.yaml`, `render.yaml`, `render/*.yaml` | Display und Renderer für Uhr, Home, Start, Maxim, Elisa, Schule und Wetter |
+| `components/epaper_refresh/` | Allgemeine Panel-Synchronisierung und Reinigungszyklus |
+| `components/sd_screensaver/` | SD-Karte, Bilddecodierung, Screensaver-Zustand und Wiederaufnahme |
+
+Die Renderfragmente werden über native ESPHome-`!include`-Variablen zu einer
+Lambda zusammengesetzt. Ihre Reihenfolge in `render.yaml` ist wichtig, da die
+Seiten gemeinsame Zeichenhelfer verwenden. IDs und Substitutionen werden weiterhin
+von ESPHome aufgelöst. Lokale `fonts/`, `icons/` und `secrets.yaml` bleiben neben
+der Hauptkonfiguration; sie werden nicht in das Paketverzeichnis verschoben.
+
+Gegen Nachbilder wird vor einem vollständigen Neuaufbau und jedem Screensaver-Update
+**INIT weiß → GC16 schwarz → GC16 weiß → Inhalt** ausgeführt. Auch unveränderte
+schwarze Flächen durchlaufen dadurch reale Farbwechsel. Zwischen den Stufen und
+vor Freigabe des Displays wird das Ende der physischen Wellenform über LUTAFSR
+abgewartet. Normale Datenupdates verwenden GC16 statt DU. Die Uhr zeichnet jede
+Minute alle Ziffern sowie Datum und Wetter neu. Sichtbares Blinken und längere
+Umschaltzeiten sind der Preis dieser auf Bildqualität ausgelegten Einstellung.
+
+Die Raumsymbole sind für höheren Kontrast schwarz. VCOM und Temperatur werden
+nicht anhand der Fotos verändert. Eine abschließende Qualitätsprüfung am Gerät
+ist erforderlich.
+
+Prüfung der Refresh-Zustandsmaschine ohne Hardware:
+
+```sh
+python tests/test_epaper_refresh.py
+```
+
+Für Konfigurationsprüfung und Firmware-Build werden die eigenen lokalen Schriften,
+Symbole und Zugangsdaten benötigt:
+
+```sh
+esphome config sph-reterminal-e1003.yaml
+esphome compile sph-reterminal-e1003.yaml
+```
+
+Das Refactoring wurde mit ESPHome 2026.10.0 vollständig kompiliert; fehlende lokale
+Schriften und Symbole wurden dafür durch Test-Assets ersetzt. Diese Test-Assets
+und Zugangsdaten sind kein Bestandteil des Commits. Der Regressionstest prüft,
+dass keine Reinigungsstufe vor Ende der vorigen Wellenform startet und der
+normale Renderer anschließend wiederhergestellt wird. Er ersetzt keinen Paneltest.

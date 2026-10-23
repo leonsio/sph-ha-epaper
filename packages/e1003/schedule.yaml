@@ -1,0 +1,43 @@
+interval:
+- interval: 5s
+  then:
+  - script.execute: screensaver_tick
+- interval: 5s
+  then:
+  - script.execute: elisa_refresh
+- interval: 60s
+  then:
+  - script.execute: start_refresh
+# Poll the wall-clock minute so refresh does not drift relative to HA time.
+# A busy display does not consume the minute key; the next 5s poll retries.
+- interval: 5s
+  then:
+  - script.execute: maxim_refresh
+- interval: 60s
+  then:
+  - if:
+      condition:
+        lambda: return !id(sd_photos).active() && id(current_page)==10 && id(initial_render_done) && !id(refresh_busy);
+      then:
+      - lambda: |-
+          id(solar_partial_refresh)=true;
+          id(dirty_pages)|=(1U<<10);
+      - script.execute: refresh_display
+# A full redraw is due after 60min of ACTIVE operation. Deep sleep is handled
+# independently: on every wake the first display update is already full.
+# The earliest event wins, and a full redraw resets last_full_refresh_ms.
+- interval: 30s
+  then:
+  - if:
+      condition:
+        lambda: return !id(sd_photos).active() && id(initial_render_done) && !id(refresh_busy) && id(last_full_refresh_ms) != 0 && (uint32_t)(millis() - id(last_full_refresh_ms)) >= 3600000UL;
+      then:
+      - lambda: |-
+          ESP_LOGI("ui_refresh", "60 Minuten seit Full Refresh -> naechstes Update FULL");
+          id(full_refresh_due) = true;
+          id(force_content) = true;
+          id(dirty_pages) |= 0xFFFU;
+          id(status_dirty) = true;
+      - script.execute: refresh_display
+# Energy page: no minute-level redraw. Normal 60min FULL timer above
+# handles an open energy page, and page navigation paints it on entry.

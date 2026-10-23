@@ -1,0 +1,274 @@
+|
+  // Native 1872 x 1404 renderer. No old page or centered 800 x 480 canvas.
+  const int W=it.get_width(), H=it.get_height();
+  const bool maxim_level=id(current_page)>=2 && id(current_page)<=6;
+  const bool home_level=id(current_page)==1 || (id(current_page)>=8 && id(current_page)<=10);
+  const int NAV_LEFT=12, NAV_RIGHT=W-210, NAV1_TOP=8, NAV1_BOTTOM=88, NAV2_TOP=96, NAV2_BOTTOM=168;
+  // Home and Maxim have second-row navigation; Start and Wetter do not.
+  const int CONTENT_TOP=(home_level || maxim_level) ? 180 : 100;
+  const Color INK=Color::BLACK, PAPER=Color::WHITE;
+  const Color LIGHT(238,238,238), MID(204,204,204), DARK(153,153,153);
+  const uint32_t render_start = millis();
+  static int painted_page=-1, painted_wifi=-1, painted_battery=-999, painted_sleep=-1, painted_usb=-1;
+  static std::string painted_home_room, painted_home_message, painted_home_sidebar_signature;
+  static std::string painted_energy_values;
+  static int painted_home_room_offset=-1, painted_home_device_offset=-1;
+  const bool first=painted_page<0;
+  // A logical Home change is distinct from a full-panel refresh. Its old
+  // framebuffer remains intact, so the area bounding only modified widgets
+  // can be sent to the panel by the IT8951 dirty-region implementation.
+  const bool interval_elapsed=id(last_full_refresh_ms)!=0 &&
+      (uint32_t)(millis()-id(last_full_refresh_ms))>=3600000UL;
+  if(interval_elapsed)id(full_refresh_due)=true;
+  const bool home_partial=id(current_page)==8 && painted_page==8 &&
+      id(home_partial_refresh) && !id(full_refresh_due) && !first && !id(force_content);
+  const bool solar_partial=id(current_page)==10 && painted_page==10 &&
+      id(solar_partial_refresh) && !id(full_refresh_due) && !first && !id(force_content);
+  id(solar_partial_refresh)=false;
+  const bool start_partial=id(current_page)==0 && painted_page==0 &&
+      id(start_partial_refresh) && !id(full_refresh_due) && !first && !id(force_content);
+  id(start_partial_refresh)=false;
+  const bool maxim_partial=id(current_page)==2 && painted_page==2 &&
+      id(maxim_partial_refresh) && !id(full_refresh_due) && !first && !id(force_content);
+  id(maxim_partial_refresh)=false;
+  const bool elisa_partial=id(current_page)==11 && painted_page==11 &&
+      id(elisa_partial_refresh) && !id(full_refresh_due) && !first && !id(force_content);
+  id(elisa_partial_refresh)=false;
+  const bool energy_partial=false;  // Energie: nur bei Navigation oder 60min-FULL zeichnen.
+  const bool content_changed=first || painted_page!=id(current_page) || id(force_content) ||
+      id(full_refresh_due) || home_partial || energy_partial || solar_partial || start_partial || maxim_partial || elisa_partial || (id(dirty_pages)&(1U<<id(current_page)));
+  id(home_partial_refresh)=false;
+  id(force_content)=false;
+  id(dirty_pages)&=~(1U<<id(current_page));
+  // Native IT8951 Gray4 fill: write packed 4-bpp nibbles directly into the
+  // existing framebuffer. No temporary RGB888 tile and no per-pixel RGB ->
+  // grayscale conversion. Two pixels share one byte; byte-aligned interiors
+  // are filled with memset() while odd edge pixels are nibble-preserved.
+  uint32_t solid_rect_calls=0, solid_rect_rows=0, solid_blit_calls=0;
+  auto fast_rect=[&](int x,int y,int w,int h,Color color){
+    int x2=std::min(W,x+w), y2=std::min(H,y+h);
+    x=std::max(0,x); y=std::max(0,y); w=x2-x; h=y2-y;
+    if(w<=0||h<=0)return;
+    solid_rect_calls++;
+    solid_rect_rows+=(uint32_t)h;
+    solid_blit_calls++;  // one native Gray4 rectangle operation
+    esphome::it8951_native::fill_gray4_rect(id(epaper),x,y,w,h,color);
+  };
+  // Whole-buffer memset is dramatically faster than a 2.43M-pixel partial erase.
+  // Repaint the small navigation only when content actually changes.
+  static std::string painted_weather_navigation;
+  const std::string current_weather_navigation=id(epaper_weather_condition).state;
+  const bool weather_navigation_changed=current_weather_navigation!=painted_weather_navigation;
+  const bool repaint_nav=(content_changed && !home_partial && !energy_partial && !solar_partial && !start_partial && !maxim_partial && !elisa_partial) ||
+      weather_navigation_changed;
+  if(content_changed && !home_partial && !energy_partial && !solar_partial && !start_partial && !maxim_partial && !elisa_partial){
+    const uint32_t clear_start=millis();
+    it.fill(PAPER);
+    id(last_full_refresh_ms)=millis();
+    id(full_refresh_due)=false;
+    ESP_LOGI("ui_refresh", "FULL: gesamte Bildflaeche, 60min-Zaehler neu gestartet");
+    ESP_LOGI("ui_timing","Puffer löschen: %u ms",(unsigned)(millis()-clear_start));
+  } else if(maxim_partial) {
+    ESP_LOGI("ui_refresh", "PARTIAL Maxim: nur geaenderte Werte oder Karten");
+  } else if(start_partial) {
+    ESP_LOGI("ui_refresh", "PARTIAL Start: nur geaenderte Karten");
+  } else if(solar_partial) {
+    ESP_LOGI("ui_refresh", "PARTIAL Solar: nur geaenderte Werte/Balken; FULL-Zaehler unveraendert");
+  } else if(home_partial) {
+    ESP_LOGI("ui_refresh", "PARTIAL: kein it.fill(), Home-Kacheln werden einzeln verglichen");
+  } else if(energy_partial) {
+    ESP_LOGI("ui_refresh", "PARTIAL: kein it.fill(), Energy-Werte werden gezielt aktualisiert");
+  }
+  struct RenderTiming {uint32_t start;int page;~RenderTiming(){ESP_LOGI("ui_timing","Seite %d: Aufbau %u ms",page,(unsigned)(millis()-start));}} timing{render_start,id(current_page)};
+  auto now=id(ha_time).now();
+  auto clean=[](std::string s) {
+    std::string out; bool space=false;
+    for(size_t i=0;i<s.size();i++) { char ch=s[i];
+      if(ch=='<' && i+1<s.size() && (std::isalpha(static_cast<unsigned char>(s[i+1]))||s[i+1]=='/')) {
+        auto end=s.find('>',i+1);if(end!=std::string::npos){i=end;ch=' ';}
+      }
+      if(ch=='\n'||ch=='\r'||ch=='\t')ch=' ';
+      if(ch==' ' && space)continue; space=ch==' '; out+=ch;
+    }
+    const std::pair<const char*,const char*> entities[]={{"&amp;","&"},{"&nbsp;"," "},{"&lt;","<"},{"&gt;",">"},{"&quot;","\""},{"&#39;","'"}};
+    for(auto e:entities){size_t p=0;while((p=out.find(e.first,p))!=std::string::npos){out.replace(p,strlen(e.first),e.second);p+=strlen(e.second);}}
+    return out;
+  };
+  auto value=[&](JsonVariant v)->std::string {
+    if(v.isNull())return "";
+    if(v.is<const char*>())return clean(v.as<std::string>());
+    if(v.is<int>())return std::to_string(v.as<int>());
+    return "";
+  };
+  auto pop_utf=[](std::string &s){if(s.empty())return;size_t p=s.size()-1;while(p>0 && (static_cast<unsigned char>(s[p])&0xC0)==0x80)--p;s.resize(p);};
+  auto width=[&](const std::string&s,auto f){int x,y,w,h;it.get_text_bounds(0,0,s.c_str(),f,TextAlign::TOP_LEFT,&x,&y,&w,&h);return w;};
+  // Measure UTF-8 prefixes by binary search instead of removing one byte at a time.
+  auto prefix=[&](const std::string&s,auto f,int maxw,const std::string&suffix){
+    std::vector<size_t> ends{0};for(size_t p=0;p<s.size();){p++;while(p<s.size()&&(static_cast<unsigned char>(s[p])&0xC0)==0x80)p++;ends.push_back(p);}
+    size_t lo=0,hi=ends.size()-1;while(lo<hi){size_t mid=(lo+hi+1)/2;if(width(s.substr(0,ends[mid])+suffix,f)<=maxw)lo=mid;else hi=mid-1;}return ends[lo];
+  };
+  auto fit=[&](std::string s,auto f,int maxw){if(width(s,f)<=maxw)return s;return s.substr(0,prefix(s,f,maxw,"..."))+"...";};
+  auto lines=[&](std::string s,auto f,int maxw){
+    std::vector<std::string> out;s=clean(s);size_t offset=0;
+    while(offset<s.size()){
+      std::string rest=s.substr(offset);size_t cut=prefix(rest,f,maxw,"");
+      if(cut==0){cut=1;while(cut<rest.size()&&(static_cast<unsigned char>(rest[cut])&0xC0)==0x80)cut++;}
+      if(cut<rest.size()){size_t blank=rest.rfind(' ',cut);if(blank!=std::string::npos&&blank>cut/3)cut=blank;}
+      out.push_back(rest.substr(0,cut));offset+=cut;while(offset<s.size()&&s[offset]==' ')offset++;
+    }
+    return out;
+  };
+  uint32_t text_draw_calls=0;
+  auto text=[&](int x,int y,const std::string&s,auto f,Color color,int maxw){text_draw_calls++;it.printf(x,y,f,color,"%s",fit(s,f,maxw).c_str());};
+  auto center=[&](int x,int y,const std::string&s,auto f,Color color){text_draw_calls++;it.printf(x,y,f,color,TextAlign::CENTER,"%s",s.c_str());};
+  // A single render lambda survives display.update(): retain precise number-only
+  // cells generated by the LAST full render, not guessed from fixed text offsets.
+  static int maxim_clock_hour_x=-1, maxim_clock_minute_x=-1, maxim_clock_digit_y=-1;
+  static int maxim_clock_digit_w=0, maxim_clock_digit_h=0, maxim_clock_text_y=0;
+  static int maxim_count_hour_x=-1, maxim_count_minute_x=-1, maxim_count_digit_y=-1;
+  static int maxim_count_hour_w=0, maxim_count_minute_w=0, maxim_count_digit_h=0;
+  if(maxim_partial){
+    // A single immutable minute snapshot eliminates the visible offset between
+    // clock and countdown. Clear to PAPER and draw the final values before
+    // the ONE IT8951 update; never send a separate "blank" frame.
+    if(id(maxim_time_part)!=5 || id(maxim_tick_epoch)<=0)return;
+    const auto t=esphome::ESPTime::from_epoch_local((time_t)id(maxim_tick_epoch));
+    const int64_t seconds=std::max(int64_t(0),id(maxim_target_epoch)-id(maxim_tick_epoch));
+    const int64_t total_minutes=(seconds+59)/60;
+    const int64_t h=total_minutes/60,m=total_minutes%60;
+    unsigned changed=0;
+    if(maxim_clock_hour_x>=0 && t.hour!=id(maxim_clock_hours_value)){
+      char digits[8];snprintf(digits,sizeof(digits),"%02d",t.hour);
+      fast_rect(maxim_clock_hour_x,maxim_clock_digit_y,maxim_clock_digit_w,maxim_clock_digit_h,PAPER);
+      text(maxim_clock_hour_x+3,maxim_clock_text_y,digits,id(font_maxim_clock),INK,maxim_clock_digit_w-6);
+      id(maxim_clock_hours_value)=t.hour;changed++;
+    }
+    if(maxim_clock_minute_x>=0 && t.minute!=id(maxim_clock_minutes_value)){
+      char digits[8];snprintf(digits,sizeof(digits),"%02d",t.minute);
+      fast_rect(maxim_clock_minute_x,maxim_clock_digit_y,maxim_clock_digit_w,maxim_clock_digit_h,PAPER);
+      text(maxim_clock_minute_x+3,maxim_clock_text_y,digits,id(font_maxim_clock),INK,maxim_clock_digit_w-6);
+      id(maxim_clock_minutes_value)=t.minute;changed++;
+    }
+    if(id(maxim_target_epoch)>0 && h>0 && maxim_count_hour_x>=0 && h!=id(maxim_school_hours_value)){
+      const std::string digits=std::to_string(h);
+      fast_rect(maxim_count_hour_x,maxim_count_digit_y,maxim_count_hour_w,maxim_count_digit_h,PAPER);
+      text(maxim_count_hour_x+maxim_count_hour_w-width(digits,id(font_lesson))-2,
+           maxim_count_digit_y+2,digits,id(font_lesson),INK,maxim_count_hour_w);
+      id(maxim_school_hours_value)=h;changed++;
+    }
+    if(id(maxim_target_epoch)>0 && maxim_count_minute_x>=0 && m!=id(maxim_school_minutes_value)){
+      const std::string digits=std::to_string(m);
+      fast_rect(maxim_count_minute_x,maxim_count_digit_y,maxim_count_minute_w,maxim_count_digit_h,PAPER);
+      text(maxim_count_minute_x+maxim_count_minute_w-width(digits,id(font_lesson))-2,
+           maxim_count_digit_y+2,digits,id(font_lesson),INK,maxim_count_minute_w);
+      id(maxim_school_minutes_value)=int(m);changed++;
+    }
+    ESP_LOGI("maxim_time","Uhr + Countdown: %u Zahlenfelder im selben Frame (%02d:%02d / %lld Std %lld Min)",
+             changed,t.hour,t.minute,(long long)h,(long long)m);
+    id(maxim_time_part)=0;
+    return;
+  }
+  // Main navigation shares all available width between enabled tabs.
+  const char* top_tabs[]={"Start","Home","Maxim","Elisa","Wetter"};
+  auto navigation_weather_glyph=[&]()->const char*{
+    const std::string c=id(epaper_weather_condition).state;
+    if(c=="sunny")return "\U000F0599";
+    if(c=="clear-night")return "\U000F0594";
+    if(c=="cloudy")return "\U000F0590";
+    if(c=="fog")return "\U000F0591";
+    if(c=="hail")return "\U000F0592";
+    if(c=="lightning")return "\U000F0593";
+    if(c=="lightning-rainy")return "\U000F067E";
+    if(c=="pouring")return "\U000F0596";
+    if(c=="rainy")return "\U000F0597";
+    if(c=="snowy")return "\U000F0598";
+    if(c=="snowy-rainy")return "\U000F067F";
+    if(c=="windy")return "\U000F059D";
+    if(c=="windy-variant")return "\U000F059E";
+    if(c=="exceptional")return "\U000F0F38";
+    return "\U000F0595"; // partlycloudy and unavailable fallback
+  };
+  const char* top_icons[]={"\U000F056E","\U000F07D0","\U000F0643","\U000F1077",navigation_weather_glyph()};
+  const uint32_t top_bits[5]={1U,2U,4U,16U,8U};
+  int visible_top[5],visible_count=0;
+  for(int i=0;i<5;i++)if(id(nav_visibility_mask)&top_bits[i])visible_top[visible_count++]=i;
+  if(visible_count==0){visible_top[0]=0;visible_count=1;}
+  for(int cell=0;cell<visible_count;cell++){
+    if(!repaint_nav)continue;
+    const int i=visible_top[cell];
+    int x=NAV_LEFT+cell*(NAV_RIGHT-NAV_LEFT)/visible_count;
+    int right=NAV_LEFT+(cell+1)*(NAV_RIGHT-NAV_LEFT)/visible_count;
+    bool active=(i==0&&id(current_page)==0)||(i==1&&home_level)||(i==2&&maxim_level)||(i==3&&id(current_page)==11)||(i==4&&id(current_page)==7);
+    fast_rect(x+3,NAV1_TOP,right-x-6,NAV1_BOTTOM-NAV1_TOP,active?INK:LIGHT);
+    const Color tab_color=active?PAPER:INK;
+    const std::string label=top_tabs[i];
+    const int label_width=width(label,id(ui_tab));
+    const int group_left=(x+right-label_width-52)/2;
+    center(group_left+21,(NAV1_TOP+NAV1_BOTTOM)/2,top_icons[i],id(mdi_home),tab_color);
+    center(group_left+52+label_width/2,(NAV1_TOP+NAV1_BOTTOM)/2,label,id(ui_tab),tab_color);
+    it.rectangle(x,NAV1_TOP,right-x,NAV1_BOTTOM-NAV1_TOP,Color(188,188,188));
+  }
+  if(repaint_nav){
+    fast_rect(NAV_LEFT,NAV2_TOP,NAV_RIGHT-NAV_LEFT,NAV2_BOTTOM-NAV2_TOP,PAPER);
+    if(home_level || maxim_level){
+      const char* home_tabs[]={"Übersicht","Haussteuerung","Energie","Solar"};
+      const int home_targets[]={1,8,9,10};
+      const char* maxim_tabs[]={"Übersicht","Stundenplan","Vertretungsplan","Hausaufgaben","Arbeiten"};
+      const int maxim_targets[]={2,3,4,5,6};
+      const int count=home_level?4:5;
+      for(int i=0;i<count;i++){
+        int x=NAV_LEFT+i*(NAV_RIGHT-NAV_LEFT)/count, right=NAV_LEFT+(i+1)*(NAV_RIGHT-NAV_LEFT)/count;
+        const bool active=id(current_page)==(home_level?home_targets[i]:maxim_targets[i]);
+        fast_rect(x+3,NAV2_TOP,right-x-6,NAV2_BOTTOM-NAV2_TOP,active?INK:LIGHT);
+        center((x+right)/2,(NAV2_TOP+NAV2_BOTTOM)/2,home_level?home_tabs[i]:maxim_tabs[i],id(ui_tab),active?PAPER:INK);
+        it.rectangle(x,NAV2_TOP,right-x,NAV2_BOTTOM-NAV2_TOP,Color(188,188,188));
+      }
+    }
+  }
+  if(repaint_nav)painted_weather_navigation=current_weather_navigation;
+  const int wx=W-142;
+  const int sleep_state=id(sleep_indicator)?1:0;
+  const int sleep_x=wx-36;
+  if(repaint_nav || sleep_state!=painted_sleep){
+    fast_rect(sleep_x-24,16,48,52,PAPER);
+    if(sleep_state){
+      center(sleep_x,42,"\U000F04B2",id(mdi_status),INK);
+    }
+    painted_sleep=sleep_state;
+  }
+  float rssi=id(wifi_rssi).state;
+  int level=wifi::global_wifi_component->is_connected() && std::isfinite(rssi) ? (rssi>=-55?4:rssi>=-65?3:rssi>=-75?2:1):0;
+  if(repaint_nav || level!=painted_wifi){
+  fast_rect(wx-2,20,50,48,PAPER);
+  for(int i=0;i<4;i++){int h=9+8*i;it.rectangle(wx+i*11,60-h,8,h,INK);if(i<level)fast_rect(wx+i*11,60-h,8,h,INK);}
+  if(!level)it.line(wx,25,wx+42,62,INK);
+  painted_wifi=level;
+  }
+  const int bx=W-82;
+  float battery=id(battery_level).state;
+  int battery_pixels=std::isfinite(battery)?int(std::max(0.0f,std::min(100.0f,battery))*0.52f):-1;
+  // ESPHome E1003 GPIO1 is battery voltage, not a charger-state pin.
+  // Mark external USB power ONLY when a real HA binary sensor says ON.
+  const int usb_power=id(e1003_usb_power).has_state()? (id(e1003_usb_power).state?1:0) : -1;
+  if(repaint_nav || battery_pixels!=painted_battery || usb_power!=painted_usb){
+    fast_rect(bx-2,24,72,42,PAPER);
+    it.rectangle(bx,29,60,30,INK);fast_rect(bx+60,38,6,12,INK);
+    if(std::isfinite(battery)){
+      int fill=int(std::max(0.0f,std::min(100.0f,battery))*0.52f);
+      fast_rect(bx+4,33,fill,22,INK);
+    } else center(bx+30,44,"?",id(ui_small),INK);
+    if(usb_power==1){
+      // High-contrast lightning bolt: readable irrespective of battery fill.
+      fast_rect(bx+21,32,20,25,PAPER);
+      const int ax[7]={33,25,31,26,38,32,37};
+      const int ay[7]={33,44,44,55,40,40,33};
+      for(int j=0;j<7;j++)it.line(bx+ax[j],ay[j],bx+ax[(j+1)%7],ay[(j+1)%7],INK);
+    }
+    painted_battery=battery_pixels;
+    painted_usb=usb_power;
+  }
+  if(repaint_nav)it.line(0,CONTENT_TOP-6,W,CONTENT_TOP-6,INK);
+  painted_page=id(current_page);
+  ESP_LOGI("ui_timing","Navigation: %u ms; Inhalt: %s",(unsigned)(millis()-render_start),content_changed?"neu":"unverändert");
+  if(!content_changed)return;
+  // Only full refreshes erased the entire buffer; Home partials use local clears.

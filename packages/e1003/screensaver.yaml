@@ -1,0 +1,89 @@
+script:
+- id: screensaver_activity
+  mode: single
+  then:
+  - lambda: |-
+      const bool was_active=id(sd_photos).active();
+      id(screensaver_waking)=was_active || id(screensaver_waking);
+      id(sd_photos).activity();
+      if(was_active){id(screensaver_redraw)=true;id(screensaver_stop).execute();}
+- id: screensaver_stop
+  mode: restart
+  then:
+  - lambda: |-
+      const bool was_active=id(sd_photos).active();
+      id(sd_photos).stop();
+      if(was_active || id(screensaver_redraw)){
+        id(screensaver_redraw)=true;
+        id(force_content)=true;id(full_refresh_due)=true;
+        id(home_partial_refresh)=false;id(solar_partial_refresh)=false;
+        id(start_partial_refresh)=false;id(maxim_partial_refresh)=false;id(elisa_partial_refresh)=false;
+      }
+  - wait_until:
+      condition:
+        lambda: return !id(refresh_busy) && id(panel_refresh).idle();
+  - if:
+      condition:
+        lambda: return id(screensaver_redraw);
+      then:
+      - lambda: id(screensaver_redraw)=false;
+      - script.execute: refresh_display
+- id: screensaver_tick
+  mode: single
+  then:
+  - if:
+      condition:
+        lambda: return !id(refresh_busy) && id(panel_refresh).idle();
+      then:
+      - lambda: |-
+          id(sd_photos).poll_card();
+          id(screensaver_switch).publish_state(id(screensaver_enabled) && (id(screensaver_source).current_option()!="Bild" || id(sd_photos).ready()));
+          id(screensaver_count).publish_state(id(sd_photos).count());
+          if(!id(screensaver_enabled) || !(id(screensaver_source).current_option()!="Bild" || id(sd_photos).ready())){
+            if(id(sd_photos).active() || id(sd_photos).resume_requested())id(screensaver_stop).execute();
+            return;
+          }
+          const uint32_t start=std::stoul(std::string(id(screensaver_start).current_option().c_str()));
+          const bool clock=id(screensaver_source).current_option()!="Bild";
+          auto clock_now=id(ha_time).now();
+          const uint32_t interval=clock?1:std::stoul(std::string(id(screensaver_interval).current_option().c_str()));
+          const bool minute_changed=clock && id(sd_photos).active() && clock_now.is_valid() &&
+              id(sd_photos).clock_minute()!=clock_now.timestamp/60;
+          if(id(sd_photos).due(start,interval) || minute_changed){
+            id(refresh_busy)=true;
+            if(clock ? id(sd_photos).next_clock(clock_now.is_valid()?clock_now.timestamp/60:0) : id(sd_photos).next()){
+              id(screensaver_filename).publish_state(id(sd_photos).filename());
+              id(screensaver_count).publish_state(id(sd_photos).count());
+              id(screensaver_show).execute();
+            }else{
+              // Do not spin/retry every five seconds after a bad image.
+              id(screensaver_redraw)=id(sd_photos).active();
+              id(sd_photos).activity();id(refresh_busy)=false;
+              id(screensaver_switch).turn_off();
+            }
+          }else if(id(sd_photos).hourly_due()){
+            id(refresh_busy)=true;id(screensaver_show).execute();
+          }
+- id: screensaver_show
+  mode: single
+  then:
+  - lambda: id(panel_refresh).clean();
+  - wait_until:
+      condition:
+        lambda: return id(panel_refresh).idle();
+  - it8951.update:
+      id: epaper
+      mode: GC16
+  - wait_until:
+      condition:
+        lambda: return id(panel_refresh).idle();
+  - lambda: |-
+      id(refresh_busy)=false;
+      id(initial_render_done)=true;
+      ESP_LOGI("sd_screensaver","Screensaver: Reinigung und GC16 abgeschlossen");
+  - if:
+      condition:
+        not:
+          script.is_running: deep_sleep_idle
+      then:
+      - script.execute: deep_sleep_idle

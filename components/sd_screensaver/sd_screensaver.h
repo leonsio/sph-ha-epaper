@@ -3,6 +3,7 @@
 #include "esphome/core/helpers.h"
 #include "esphome/components/it8951/it8951.h"
 #include "sdmmc_cmd.h"
+#include "esphome/components/epaper_refresh/epaper_refresh.h"
 #include <string>
 #include <vector>
 
@@ -11,29 +12,12 @@ namespace esphome::sd_screensaver {
 // loses this marker and is therefore detectable independently of ESP reset codes.
 bool sleeping_screensaver_input_wake();
 struct SleepState { uint32_t magic; bool active; bool clock_active; uint32_t clock_minute; char last_file[256]; };
-class DisplayAccess : public it8951::IT8951Display {
- public:
-  using IT8951Display::phase_;
-  using IT8951Display::initialised_;
-  using IT8951Display::update_pending_;
-  using IT8951Display::buffer_;
-  using IT8951Display::row_width_;
-  using IT8951Display::apply_transform_;
-  using IT8951Display::x_low_;
-  using IT8951Display::x_high_;
-  using IT8951Display::y_low_;
-  using IT8951Display::y_high_;
-  using IT8951Display::width_;
-  using IT8951Display::height_;
-  using IT8951Display::invert_colors_;
-  using display::Display::writer_;
-};
 class SDScreensaver : public Component {
  public:
+  void set_refresh(epaper_refresh::EpaperRefresh *p) { refresh_=p; }
   void set_display(it8951::IT8951Display *p) { display_=p; }
   float get_setup_priority() const override { return 500.0f; } // after SPI, before display
   void setup() override;
-  void loop() override;
   void on_safe_shutdown() override;
   bool display_idle() const;
   bool poll_card();
@@ -43,7 +27,6 @@ class SDScreensaver : public Component {
   const std::string &filename() const { return filename_; }
   bool active() const { return active_; }
   bool resume_requested() const { return resume_; }
-  bool boot_cleanup_active() const { return boot_cleanup_active_; }
   void activity();
   void stop();
   bool next();
@@ -59,13 +42,13 @@ class SDScreensaver : public Component {
     return elapsed>=minutes*60000UL?1000UL:minutes*60000UL-elapsed;
   }
  private:
-  bool panel_idle_() const;
   bool mount_();
   void unmount_();
   void scan_();
   bool load_bmp_(const std::string &path, uint8_t *out);
   bool load_gray4_(const std::string &path, uint8_t *out);
   void set_pixel_(uint8_t *out,int x,int y,uint8_t gray);
+  epaper_refresh::EpaperRefresh *refresh_{nullptr};
   sdmmc_card_t *card_{nullptr};
   it8951::IT8951Display *display_{nullptr};
   uint32_t clock_minute_{0}, previous_clock_minute_{0};
@@ -75,13 +58,5 @@ class SDScreensaver : public Component {
   bool mounted_{false}, active_{false}, resume_{false}, clock_active_{false};
   uint32_t last_activity_{0}, last_change_{0}, last_full_{0};
   int width_{0}, height_{0};
-  display::display_writer_t boot_writer_{};
-  bool boot_cleanup_active_{false};
-  bool boot_cleanup_cold_start_{false};
-  bool boot_cleanup_pause_pending_{false};
-  uint8_t boot_cleanup_stage_{0};
-  uint32_t boot_cleanup_pause_until_{0};
-  uint32_t boot_cleanup_start_after_{0};
-  uint32_t user_full_refresh_until_{0};
 };
 } // namespace

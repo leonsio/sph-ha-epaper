@@ -1,0 +1,565 @@
+|
+  if(id(current_page)==2){
+    // Maxim -> Uebersicht: fixed two-column layout with isolated digit refresh.
+    if(!now.is_valid()){
+      if(!maxim_partial)text(30,CONTENT_TOP+50,"Uhrzeit wird synchronisiert ...",id(ui_body),INK,W-60);
+      return;
+    }
+    const int64_t today_day=[](int y,int m,int d)->int64_t{
+      y-=m<=2;int era=(y>=0?y:y-399)/400;
+      unsigned yo=y-era*400,doy=(153*(m+(m>2?-3:9))+2)/5+d-1;
+      return int64_t(era)*146097+yo*365+yo/4-yo/100+doy-719468;
+    }(now.year,now.month,now.day_of_month);
+    auto civil=[](int y,int m,int d)->int64_t{
+      y-=m<=2;int era=(y>=0?y:y-399)/400;
+      unsigned yo=y-era*400,doy=(153*(m+(m>2?-3:9))+2)/5+d-1;
+      return int64_t(era)*146097+yo*365+yo/4-yo/100+doy-719468;
+    };
+    auto day_date=[](int64_t d){return esphome::ESPTime::from_epoch_utc(d*86400);};
+    auto short_date=[&](int64_t d){auto t=day_date(d);char b[22];snprintf(b,sizeof(b),"%02d.%02d.%04d",t.day_of_month,t.month,t.year);return std::string(b);};
+    auto iso_date=[&](int64_t d){auto t=day_date(d);char b[16];snprintf(b,sizeof(b),"%04d-%02d-%02d",t.year,t.month,t.day_of_month);return std::string(b);};
+    auto parse_date=[&](std::string s){int y=0,m=0,d=0;if(sscanf(s.c_str(),"%d-%d-%d",&y,&m,&d)!=3||y<2020||m<1||m>12||d<1||d>31)return int64_t(-1);return civil(y,m,d);};
+    auto weekday=[](int64_t d){return int((d+3)%7);}; // Mon=0, Sun=6.
+    auto minutes=[](const std::string&s){int h=0,m=0;return sscanf(s.c_str(),"%d:%d",&h,&m)==2&&h<24&&m<60?h*60+m:-1;};
+    auto parse_json=[](const std::string&s){return esphome::json::parse_json(s.empty()||s=="unknown"||s=="unavailable"?"{}":s);};
+    auto timetable=parse_json(id(epaper_timetable_json).state);
+    auto substitutes=parse_json(id(kfg_substitution_json).state);
+    auto homework=parse_json(id(epaper_homework_json).state);
+    auto controls=parse_json(id(epaper_learning_groups_json).state);
+    auto cal=parse_json(id(maxim_calendar_json).state);
+    JsonObject attrs=timetable.as<JsonObject>();
+    auto raw_text=[&](JsonVariant v)->std::string{if(v.isNull())return "";if(v.is<const char*>())return v.as<std::string>();if(v.is<int>())return std::to_string(v.as<int>());return "";};
+    // Official Hessian holiday dates, first/last day inclusive. Weekend at start
+    // of a Monday holiday belongs to the displayed break, not to the countdown.
+    struct Holiday{const char*name;int y,m,d,ey,em,ed;};
+    static const Holiday official[]={
+      {"Herbstferien",2026,10,5,2026,10,17},
+      {"Weihnachtsferien",2026,12,23,2027,1,12},
+      {"Osterferien",2027,3,22,2027,4,2},
+      {"Sommerferien",2027,6,28,2027,8,6},
+      {"Herbstferien",2027,10,4,2027,10,16},
+      {"Weihnachtsferien",2027,12,23,2028,1,11},
+      {"Osterferien",2028,4,3,2028,4,14},
+      {"Sommerferien",2028,7,3,2028,8,11},
+      {"Herbstferien",2028,10,9,2028,10,20},
+      {"Weihnachtsferien",2028,12,27,2029,1,12},
+      {"Osterferien",2029,3,29,2029,4,13},
+      {"Sommerferien",2029,7,16,2029,8,24},
+      {"Herbstferien",2029,10,15,2029,10,26},
+      {"Weihnachtsferien",2029,12,24,2030,1,11},
+      {"Osterferien",2030,4,8,2030,4,22},
+      {"Sommerferien",2030,7,22,2030,8,30}
+    };
+    struct Break{std::string name;int64_t start,end,official_start;bool active;};
+    Break next_break{"",-1,-1,-1,false};
+    auto break_for=[&](const Holiday&h){
+      const int64_t start=civil(h.y,h.m,h.d),end=civil(h.ey,h.em,h.ed);
+      // Saturday before a Monday: zero days until holidays on Saturday.
+      const int64_t effective=start-(weekday(start)==0?2:(weekday(start)==6?1:0));
+      int64_t effective_end=end;
+      while(weekday(effective_end)==4||weekday(effective_end)==5)effective_end++;
+      return Break{h.name,effective,effective_end,start,today_day>=effective&&today_day<=effective_end};
+    };
+    for(const Holiday&h:official){Break b=break_for(h);
+      if(b.end<today_day)continue;
+      if(next_break.start<0||b.start<next_break.start)next_break=b;
+    }
+    auto free_day=[&](int64_t d){
+      if(weekday(d)>=5)return true;
+      for(const Holiday&h:official){Break b=break_for(h);if(d>=b.start&&d<=b.end)return true;}
+      if(attrs["freie_tage"].is<JsonArray>()){
+        JsonArray a=attrs["freie_tage"].as<JsonArray>();
+        for(JsonVariant v:a)if(raw_text(v)==iso_date(d))return true;
+      }
+      return false;
+    };
+    int first_start=475; // KFG normal first period: 07:55; replaced by actual first lesson.
+    auto week_type=[&](int64_t date){
+      std::string type=raw_text(attrs["wochenkennung"]);
+      int64_t anchor=parse_date(raw_text(attrs["wochenbeginn"]));
+      if(anchor>=0&&(type=="A"||type=="B")){
+        int64_t m1=date-weekday(date),m0=anchor-weekday(anchor);
+        if((std::abs(int((m1-m0)/7))%2)!=0)type=type=="A"?"B":"A";
+      }
+      return type;
+    };
+    auto lesson_visible=[&](JsonObject l,JsonArray day,const std::string&week){
+      auto badges=[&](JsonObject obj){std::string out;
+        if(obj["badge"].is<JsonArray>()){JsonArray a=obj["badge"].as<JsonArray>();for(JsonVariant v:a)out+=" "+raw_text(v)+" ";}
+        else out=" "+raw_text(obj["badge"])+" ";
+        return out;
+      };
+      std::string b=badges(l);bool a=b.find(" A ")!=std::string::npos,bb=b.find(" B ")!=std::string::npos;
+      if(a||bb)return (week=="A"&&a)||(week=="B"&&bb);
+      if(week=="A"||week=="B")for(JsonObject other:day){
+        if(raw_text(other["index"])!=raw_text(l["index"])||raw_text(other["start"])!=raw_text(l["start"]))continue;
+        if(badges(other).find(" "+week+" ")!=std::string::npos)return false;
+      }
+      return true;
+    };
+    auto scheduled=[&](int64_t d){
+      if(!attrs["eigener_plan"].is<JsonArray>())return true; // Missing data is signaled by the timetable widget.
+      JsonArray plan=attrs["eigener_plan"].as<JsonArray>();int dow=weekday(d);
+      if(dow<0||dow>=5||dow>=int(plan.size()))return false;
+      JsonArray lesson_day=plan[dow].as<JsonArray>();
+      for(JsonObject l:lesson_day)if(lesson_visible(l,lesson_day,week_type(d)))return true;
+      return false;
+    };
+    if(attrs["eigener_plan"].is<JsonArray>()&&!free_day(today_day)){
+      JsonArray plan=attrs["eigener_plan"].as<JsonArray>();int dow=weekday(today_day);
+      if(dow<5&&dow<int(plan.size())){
+        JsonArray lessons=plan[dow].as<JsonArray>();int earliest=1440;
+        for(JsonObject l:lessons)if(lesson_visible(l,lessons,week_type(today_day))){
+          int t=minutes(raw_text(l["start"]));if(t>=0)earliest=std::min(earliest,t);
+        }
+        if(earliest<1440)first_start=earliest;
+      }
+    }
+    // User asks to flip to the next school day immediately when today's school starts.
+    const bool today_school=!free_day(today_day)&&scheduled(today_day)&&now.hour*60+now.minute<first_start;
+    int64_t target=today_day+(today_school?0:1);
+    for(int i=0;i<380&&(free_day(target)||!scheduled(target));i++)target++;
+    const bool target_valid=target<today_day+380;
+    if(!target_valid)target=today_day;
+    if(target_valid&&attrs["eigener_plan"].is<JsonArray>()){
+      JsonArray plan=attrs["eigener_plan"].as<JsonArray>();int dow=weekday(target),earliest=1440;
+      if(dow<5&&dow<int(plan.size())){JsonArray lessons=plan[dow].as<JsonArray>();
+        for(JsonObject l:lessons)if(lesson_visible(l,lessons,week_type(target))){int t=minutes(raw_text(l["start"]));if(t>=0)earliest=std::min(earliest,t);}}
+      if(earliest<1440)first_start=earliest;
+      else first_start=475;
+    }
+    auto future=day_date(target);
+    struct tm tm_target={};tm_target.tm_year=future.year-1900;tm_target.tm_mon=future.month-1;
+    tm_target.tm_mday=future.day_of_month;tm_target.tm_hour=first_start/60;tm_target.tm_min=first_start%60;tm_target.tm_isdst=-1;
+    const time_t target_epoch=mktime(&tm_target);
+    id(maxim_target_epoch)=target_valid?(int64_t)target_epoch:0;
+    id(maxim_displayed_today)=now.strftime("%Y-%m-%d");
+    id(maxim_last_minute_key)=int64_t(now.timestamp)/60;
+    const int64_t left_seconds=std::max(int64_t(0),int64_t(target_epoch)-int64_t(now.timestamp));
+    // Keep countdown digits separate from static unit labels.
+    const int64_t school_total_minutes=(left_seconds+59)/60;
+    const int64_t school_hours=school_total_minutes/60;
+    const int64_t school_minutes=school_total_minutes%60;
+    const bool show_school_hours=target_valid && school_hours>0;
+    auto card=[&](int slot,int x,int y,int w,int h,std::string key){
+      static std::string cache[9];
+      if(maxim_partial&&cache[slot]==key)return false;
+      cache[slot]=key;fast_rect(x,y,w,h,PAPER);it.rectangle(x,y,w,h,MID);return true;
+    };
+    // Balanced two-column layout; keep timetable and tasks on the left.
+    const int lx=20,lw=906,rx=946,rw=W-rx-20;
+    const int y=CONTENT_TOP+6,top_h=300;
+    std::string title=(today_school?"Heutiger Schultag": "Nächster Schultag");
+    static const char *school_weekdays[]={"Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"};
+    const std::string weekday_label=school_weekdays[weekday(target)];
+    const std::string day_label=weekday_label+" - "+short_date(target)+" - "+week_type(target)+"-Woche";
+    // The daily forecast uses the selected school DATE, never blindly tomorrow.
+    std::string forecast_condition,forecast_date;
+    float forecast_high=NAN,forecast_low=NAN;
+    auto daily_doc=esphome::json::parse_json(id(epaper_weather_daily).state.empty()||
+        id(epaper_weather_daily).state=="unknown"||id(epaper_weather_daily).state=="unavailable"
+        ?"[]":id(epaper_weather_daily).state);
+    if(!daily_doc.isNull()&&!daily_doc.overflowed()&&daily_doc.is<JsonArray>()){
+      JsonArray days=daily_doc.as<JsonArray>();
+      const std::string wanted=iso_date(target);
+      for(JsonObject d:days){
+        std::string dt=raw_text(d["datetime"]);
+        if(dt.size()<10||dt.substr(0,10)!=wanted)continue;
+        forecast_date=dt.substr(0,10);
+        forecast_condition=raw_text(d["condition"]);
+        JsonVariant hi=d["high"].isNull()?d["temperature"]:d["high"];
+        JsonVariant lo=d["low"].isNull()?d["templow"]:d["low"];
+        if(hi.is<float>()||hi.is<double>()||hi.is<int>())forecast_high=hi.as<float>();
+        if(lo.is<float>()||lo.is<double>()||lo.is<int>())forecast_low=lo.as<float>();
+        break;
+      }
+    }
+    auto condition_label=[](const std::string&c)->std::string{
+      if(c=="sunny"||c=="clear-night")return "Sonnig";
+      if(c=="partlycloudy")return "Teilweise sonnig";
+      if(c=="cloudy")return "Bewölkt";
+      if(c=="rainy"||c=="pouring")return "Regnerisch";
+      if(c=="lightning"||c=="lightning-rainy")return "Gewitter";
+      if(c=="snowy"||c=="snowy-rainy")return "Schneefall";
+      if(c=="fog")return "Neblig";
+      if(c=="windy"||c=="windy-variant")return "Windig";
+      if(c=="hail")return "Hagel";
+      return "Wettervorhersage fehlt";
+    };
+    auto condition_icon=[](const std::string&c)->const char*{
+      if(c=="sunny")return "\U000F0599";
+      if(c=="clear-night")return "\U000F0594";
+      if(c=="partlycloudy")return "\U000F0595";
+      if(c=="cloudy")return "\U000F0590";
+      if(c=="rainy")return "\U000F0597";
+      if(c=="pouring")return "\U000F0596";
+      if(c=="lightning")return "\U000F0593";
+      if(c=="lightning-rainy")return "\U000F067E";
+      if(c=="snowy")return "\U000F0598";
+      if(c=="snowy-rainy")return "\U000F067F";
+      if(c=="fog")return "\U000F0591";
+      if(c=="windy"||c=="windy-variant")return "\U000F059D";
+      if(c=="hail")return "\U000F0592";
+      return "\U000F0590";
+    };
+    char temp_range[60];
+    if(std::isfinite(forecast_low)&&std::isfinite(forecast_high))
+      snprintf(temp_range,sizeof(temp_range),"Min %.0f °C  /  Max %.0f °C",forecast_low,forecast_high);
+    else if(std::isfinite(forecast_high))snprintf(temp_range,sizeof(temp_range),"Max %.0f °C",forecast_high);
+    else if(std::isfinite(forecast_low))snprintf(temp_range,sizeof(temp_range),"Min %.0f °C",forecast_low);
+    else snprintf(temp_range,sizeof(temp_range),"Min / Max: keine Daten");
+    const std::string top_key=title+day_label+std::to_string(first_start)+forecast_condition+std::string(temp_range);
+    const bool top_card=card(0,lx,y,lw,top_h,top_key);
+    // Same large font for static words and the dynamically updated digit cells.
+    // Fixed-width NUMBER CELLS keep "Std." and "Min." untouched on every tick.
+    const int digit_y=y+132,digit_h=52;
+    const int safe_start=std::max(0,std::min(1439,first_start));
+    char lesson_clock[16];
+    snprintf(lesson_clock,sizeof(lesson_clock),"%02d:%02d",safe_start/60,safe_start%60);
+    const std::string lead=std::string("Schulbeginn ")+lesson_clock+" noch ";
+    const int count_start=lx+22+width(lead,id(font_lesson))+4;
+    // Measure the currently needed digit count. Right-align number inside its
+    // small clearable cell, so "15 Std." has no reserved 4-digit whitespace.
+    // On 100 -> 99 / 10 -> 9 a one-off complete page redraw moves "Std.".
+    const std::string hour_capacity(std::max(size_t(1),std::to_string(school_hours).size()),'8');
+    const int hour_digits_w=width(hour_capacity,id(font_lesson))+5;
+    const int minute_digits_w=width("88",id(font_lesson))+5;
+    maxim_count_hour_x=show_school_hours?count_start:-1;
+    maxim_count_minute_x=show_school_hours?
+        count_start+hour_digits_w+3+width("Std.",id(font_lesson))+9:count_start;
+    maxim_count_digit_y=digit_y;
+    maxim_count_hour_w=hour_digits_w;
+    maxim_count_minute_w=minute_digits_w;
+    maxim_count_digit_h=digit_h;
+    if(top_card){
+      text(lx+21,y+9,title,id(font_start_info),INK,lw-43);
+      text(lx+22,y+69,day_label,id(font_start_info),INK,lw-44);
+      text(lx+22,digit_y+2,lead,id(font_lesson),INK,lw-44);
+      if(!target_valid)text(lx+22,y+184,"Datum fehlt",id(font_lesson),INK,lw-44);
+      else if(show_school_hours){
+        text(maxim_count_hour_x+hour_digits_w+3,digit_y+2,"Std.",id(font_lesson),INK,85);
+        text(maxim_count_minute_x+minute_digits_w+3,digit_y+2,"Min.",id(font_lesson),INK,90);
+      }else text(maxim_count_minute_x+minute_digits_w+3,digit_y+2,"Min.",id(font_lesson),INK,90);
+      std::string forecast_phrase;
+      if(forecast_date.empty())forecast_phrase="Für "+weekday_label+" fehlt die Wettervorhersage";
+      else {
+        std::string adjective=condition_label(forecast_condition);
+        if(forecast_condition=="snowy"||forecast_condition=="snowy-rainy")adjective="verschneit";
+        else if(adjective=="Wettervorhersage fehlt")adjective="unbestimmt";
+        else if(!adjective.empty() && static_cast<unsigned char>(adjective[0])<128)
+          adjective[0]=static_cast<char>(std::tolower(static_cast<unsigned char>(adjective[0])));
+        forecast_phrase="Am "+weekday_label+" ist es "+adjective;
+      }
+      text(lx+22,y+213,forecast_phrase,id(font_lesson),INK,lw-162);
+      if(!forecast_date.empty())it.printf(lx+lw-113,y+195,id(mdi_weather_hourly),INK,"%s",condition_icon(forecast_condition));
+      text(lx+22,y+263,temp_range,id(ui_body),INK,lw-44);
+    }
+    id(maxim_school_hours_mode)=show_school_hours;
+    if(target_valid){
+      if(show_school_hours){
+        id(maxim_school_hours_value)=school_hours;
+        fast_rect(maxim_count_hour_x,digit_y,hour_digits_w,digit_h,PAPER);
+        const std::string number=std::to_string(school_hours);
+        text(maxim_count_hour_x+hour_digits_w-width(number,id(font_lesson))-2,
+             digit_y+2,number,id(font_lesson),INK,hour_digits_w);
+      }else id(maxim_school_hours_value)=0;
+      id(maxim_school_minutes_value)=int(school_minutes);
+      fast_rect(maxim_count_minute_x,digit_y,minute_digits_w,digit_h,PAPER);
+      const std::string number=std::to_string(school_minutes);
+      text(maxim_count_minute_x+minute_digits_w-width(number,id(font_lesson))-2,
+           digit_y+2,number,id(font_lesson),INK,minute_digits_w);
+    }
+    // Align frame with the school-day card, not the lower navigation edge.
+    // NotoSansMono-ExtraBold 276 nearly fills the 906px card (about 21px/side);
+    // visible digit ink is vertically centered; only hour/minute cells are redrawn.
+    const int clock_top=y,clock_h=347;
+    const int digit_clock_w=width("00",id(font_maxim_clock))+12;
+    const int colon_w=width(":",id(font_maxim_clock))+12;
+    const int whole_clock_w=2*digit_clock_w+colon_w;
+    maxim_clock_hour_x=rx+(rw-whole_clock_w)/2;
+    maxim_clock_minute_x=maxim_clock_hour_x+digit_clock_w+colon_w;
+    int ink_top=10000,ink_bottom=0;
+    for(char c='0';c<='9';c++){
+      const auto *g=id(font_maxim_clock)->find_glyph(c);
+      if(g){ink_top=std::min(ink_top,g->offset_y);ink_bottom=std::max(ink_bottom,g->offset_y+g->height);}
+    }
+    const int ink_h=ink_bottom-ink_top;
+    maxim_clock_digit_y=clock_top+(clock_h-ink_h)/2-2;
+    maxim_clock_text_y=maxim_clock_digit_y+2-ink_top;
+    maxim_clock_digit_w=digit_clock_w;
+    maxim_clock_digit_h=ink_h+4;
+    const bool clock_card=card(2,rx,clock_top,rw,clock_h,std::string("clock frame v4.2.16"));
+    if(clock_card){
+      text(maxim_clock_hour_x+digit_clock_w+5,maxim_clock_text_y,":",id(font_maxim_clock),INK,colon_w-9);
+    }
+    char hour_buf[12],minute_buf[12];
+    snprintf(hour_buf,sizeof(hour_buf),"%02d",now.hour);
+    snprintf(minute_buf,sizeof(minute_buf),"%02d",now.minute);
+    id(maxim_clock_hours_value)=now.hour;
+    id(maxim_clock_minutes_value)=now.minute;
+    fast_rect(maxim_clock_hour_x,maxim_clock_digit_y,digit_clock_w,maxim_clock_digit_h,PAPER);
+    text(maxim_clock_hour_x+3,maxim_clock_text_y,hour_buf,id(font_maxim_clock),INK,digit_clock_w-6);
+    fast_rect(maxim_clock_minute_x,maxim_clock_digit_y,digit_clock_w,maxim_clock_digit_h,PAPER);
+    text(maxim_clock_minute_x+3,maxim_clock_text_y,minute_buf,id(font_maxim_clock),INK,digit_clock_w-6);
+    // Live outdoor weather is separate from the target-school-day forecast.
+    std::string outdoor=id(weather_outdoor_temperature).state;
+    if(outdoor.empty()||outdoor=="unknown"||outdoor=="unavailable")outdoor="--";
+    const std::string outdoor_value=outdoor+" °C";
+    const std::string current_cond=id(epaper_weather_condition).state;
+    // Equal padding around visible heading/temperature; remaining cards follow below.
+    const int current_y=clock_top+clock_h+15;
+    const int weather_pad=18;
+    auto ink_bounds=[](auto font,const std::string &str){
+      int top=10000,bottom=0;
+      const char *p=str.c_str();
+      while(*p){
+        uint32_t code=static_cast<unsigned char>(*p++);
+        int more=code<0x80?0:code<0xE0?1:code<0xF0?2:3;
+        if(more)code&=(1U<<(6-more))-1;
+        while(more-- && *p)code=(code<<6)|(static_cast<unsigned char>(*p++)&0x3F);
+        const auto *g=font->find_glyph(code);if(g&&g->height){top=std::min(top,g->offset_y);bottom=std::max(bottom,g->offset_y+g->height);}}
+      return std::pair<int,int>{top==10000?0:top,bottom};
+    };
+    const auto heading_ink=ink_bounds(id(font_lesson),"Aktuelles Wetter draußen");
+    const auto temp_ink=ink_bounds(id(font_start_weather),outdoor_value);
+    const int weather_title_y=current_y+weather_pad-heading_ink.first;
+    const int weather_temp_top=current_y+weather_pad+heading_ink.second-heading_ink.first+20;
+    const int weather_temp_y=weather_temp_top-temp_ink.first;
+    const int current_h=weather_temp_top-current_y+temp_ink.second-temp_ink.first+weather_pad;
+    if(card(8,rx,current_y,rw,current_h,outdoor_value+current_cond)){
+      text(rx+23,weather_title_y,"Aktuelles Wetter draußen",id(font_lesson),INK,rw-46);
+      text(rx+24,weather_temp_y,outdoor_value,id(font_start_weather),INK,rw-240);
+      text(rx+398,weather_temp_top+25,condition_label(current_cond),id(ui_body),INK,rw-420);
+      it.printf(rx+rw-137,weather_temp_top-8,id(mdi_weather_hourly),INK,"%s",condition_icon(current_cond));
+    }
+    // Give the forecast at the bottom of the school-day card breathing room
+    // before the timetable; preserve the timetable's bottom edge and tasks.
+    const int ly=y+top_h+28,lh=679;
+    std::string lesson_key=day_label+id(epaper_timetable_json).state+id(kfg_substitution_json).state;
+    if(card(1,lx,ly,lw,lh,lesson_key)){
+      text(lx+23,ly+9,"Stundenplan",id(font_start_info),INK,lw-46);
+      fast_rect(lx+11,ly+77,lw-22,48,LIGHT);
+      text(lx+20,ly+83,"Std.",id(ui_small),INK,76);
+      text(lx+105,ly+83,"Uhrzeit",id(ui_small),INK,203);
+      text(lx+324,ly+83,"Fach / Raum / Lehrer",id(ui_small),INK,lw-347);
+      it.line(lx+18,ly+131,lx+lw-18,ly+131,MID);
+      if(!attrs["eigener_plan"].is<JsonArray>())text(lx+23,ly+158,"Stundenplandaten fehlen.",id(ui_body),INK,lw-46);
+      else {
+        JsonArray plan=attrs["eigener_plan"].as<JsonArray>();int dow=weekday(target);
+        if(dow>=5||dow>=int(plan.size()))text(lx+23,ly+158,"Keine Stunden für diesen Tag.",id(ui_body),INK,lw-46);
+        else{
+          JsonArray lessons=plan[dow].as<JsonArray>();
+          std::vector<JsonObject> active;
+          for(JsonObject l:lessons)if(lesson_visible(l,lessons,week_type(target)))active.push_back(l);
+          std::stable_sort(active.begin(),active.end(),[&](JsonObject a,JsonObject b){return atoi(raw_text(a["index"]).c_str())<atoi(raw_text(b["index"]).c_str());});
+          int row=0;
+          const bool compact=active.size()>6;
+          const int row_height=std::max(62,std::min(93,(lh-148)/std::max(1,int(active.size()))));
+          const int max_rows=std::max(1,(lh-148)/row_height);
+          for(JsonObject l:active){if(row>=max_rows)break;
+            const int py=ly+141+row*row_height;
+            const int index=atoi(raw_text(l["index"]).c_str());
+            const int duration=std::max(1,atoi(raw_text(l["duration"]).c_str()));
+            std::string period=std::to_string(index)+(duration>1?"–"+std::to_string(index+duration-1):"");
+            std::string subject=raw_text(l["fach"]);if(subject.empty())subject=raw_text(l["subject"]);
+            std::string teacher=raw_text(l["teacher"]),room=raw_text(l["room"]),change;
+            // KFG only: apply changes with matching date, original subject and period.
+            if(substitutes["weeks"].is<JsonArray>()){
+              JsonArray weeks=substitutes["weeks"].as<JsonArray>();
+              for(JsonObject wk:weeks){JsonArray ds=wk["days"].as<JsonArray>();for(JsonObject d:ds){
+                std::string dsdate=raw_text(d["date"]);int n=0,m=0,yr=0;
+                if(parse_date(dsdate)!=target){
+                  int c=sscanf(dsdate.c_str(),"%d.%d.%d",&n,&m,&yr);
+                  if(c<2||m!=future.month||n!=future.day_of_month||(c==3&&yr>0&&yr!=future.year))continue;
+                }
+                JsonArray entries=d["entries"].as<JsonArray>();
+                for(JsonObject e:entries){
+                  std::string old=raw_text(e["fach_original"]);if(old.empty())old=raw_text(e["fach_alt"]);
+                  if(old.empty())old=raw_text(e["fach"]);
+                  std::string code=raw_text(l["subject"]);
+                  if(!old.empty()&&old!=code&&old!=subject)continue;
+                  std::string periods=raw_text(e["stunde"]);if(periods.empty())periods=raw_text(e["stunden"]);
+                  int st=atoi(periods.c_str());if(st>0&&(st<index||st>=index+duration))continue;
+                  std::string cls=raw_text(e["klasse"]);if(!cls.empty()&&cls.find("${school_class}")==std::string::npos)continue;
+                  change=raw_text(e["art"]);if(change=="Entf")change="Entfall";if(change=="Vertr")change="Vertretung";
+                  std::string replacement=raw_text(e["vertreter"]);if(!replacement.empty())teacher=replacement;
+                  std::string newroom=raw_text(e["raum"]);if(!newroom.empty())room=newroom;
+                  std::string newsubject=raw_text(e["fach"]);if(!newsubject.empty()&&newsubject!=code)subject=newsubject;
+                  break;
+                }
+              }}
+            }
+            if(row%2==0)fast_rect(lx+10,py,lw-20,row_height-2,LIGHT);
+            text(lx+22,py+8,period+".",id(font_lesson),INK,79);
+            text(lx+105,py+12,raw_text(l["start"])+"–"+raw_text(l["end"]),id(ui_small),INK,207);
+            if(compact){
+              text(lx+325,py+11,subject,id(font_lesson),INK,190);
+              text(lx+524,py+14,room+" · "+teacher+(change.empty()?"":" · "+change),id(ui_small),INK,lw-541);
+            }else{
+              text(lx+325,py+1,subject,id(font_lesson),INK,lw-346);
+              text(lx+325,py+43,"Raum "+room+" · "+teacher+(change.empty()?"":" · "+change),id(ui_small),INK,lw-346);
+            }
+            if(change=="Entfall")it.line(lx+321,py+30,lx+lw-25,py+30,INK);
+            row++;
+          }
+          if(active.empty())text(lx+25,ly+205,"Heute ist kein Unterricht eingetragen.",id(ui_body),INK,lw-55);
+        }
+      }
+    }
+    // Right sidebar: holidays, conditional KFG news and conditional changes.
+    // All KFG data is date-scoped to the SAME chosen target as the timetable.
+    const int hy=current_y+current_h+12,hh=145;
+    std::string holiday_header=next_break.start<0?"Ferientermine ergänzen":next_break.name+" · "+short_date(next_break.start);
+    if(next_break.official_start>=0&&next_break.official_start!=next_break.start)
+      holiday_header+=" (offiziell "+short_date(next_break.official_start)+")";
+    const bool holiday_card=card(4,rx,hy,rw,hh,holiday_header+std::to_string(next_break.active));
+    if(holiday_card){
+      text(rx+23,hy+9,"Ferien-Countdown",id(font_lesson),INK,rw-46);
+      text(rx+23,hy+49,holiday_header,id(ui_small),INK,rw-46);
+      const int64_t holiday_days=std::max(int64_t(0),next_break.start-today_day);
+      const std::string counter=next_break.start<0?"Keine Termine":next_break.active?"Ferien!":
+          std::to_string(holiday_days)+(holiday_days==1?" Tag":" Tage");
+      text(rx+24,hy+85,counter,id(font_start_info),INK,rw-48);
+    }
+    const int ny=hy+hh+12,nh=150;
+    std::string notices;
+    std::vector<std::string> substitutions_today;
+    auto matching_kfg_date=[&](const std::string &dsdate)->bool{
+      int64_t date=parse_date(dsdate);
+      if(date>=0)return date==target;
+      int dd=0,mm=0,yy=0;
+      const int count=sscanf(dsdate.c_str(),"%d.%d.%d",&dd,&mm,&yy);
+      if(count<2||dd<1||dd>31||mm<1||mm>12)return false;
+      if(count<3||yy<1)yy=future.year;
+      if(yy<100)yy+=2000;
+      return civil(yy,mm,dd)==target;
+    };
+    if(substitutes["weeks"].is<JsonArray>()){
+      JsonArray weeks=substitutes["weeks"].as<JsonArray>();
+      for(JsonObject wk:weeks){
+        if(!wk["days"].is<JsonArray>())continue;
+        JsonArray week_days=wk["days"].as<JsonArray>();
+        for(JsonObject d:week_days){
+          if(!matching_kfg_date(raw_text(d["date"])))continue;
+          JsonVariant news=d["news"];
+          if(news.is<JsonArray>()||news.is<JsonObject>()){
+            std::vector<JsonVariant> pending{news};
+            while(!pending.empty()){
+              JsonVariant item=pending.back();pending.pop_back();
+              if(item.is<JsonArray>()){
+                JsonArray a=item.as<JsonArray>();
+                for(int j=int(a.size())-1;j>=0;j--)pending.push_back(a[j]);
+              }else if(item.is<JsonObject>()){
+                for(JsonPair pair:item.as<JsonObject>())pending.push_back(pair.value());
+              }else{
+                std::string n=raw_text(item);
+                if(!n.empty())notices+=(notices.empty()?"":" · ")+n;
+              }
+            }
+          }else{
+            std::string n=raw_text(news);
+            if(!n.empty())notices+=(notices.empty()?"":" · ")+n;
+          }
+          if(!d["entries"].is<JsonArray>())continue;
+          JsonArray day_entries=d["entries"].as<JsonArray>();
+          for(JsonObject e:day_entries){
+            // Only changes for Maxim's class; never show another class's changes.
+            std::string classes=raw_text(e["klasse"]);
+            if(!classes.empty()){
+              bool relevant=false;
+              std::string token;
+              for(char c:classes){
+                if(c==','||c==';'||c=='/'||c=='|'||std::isspace(static_cast<unsigned char>(c))){
+                  if(token=="${school_class}")relevant=true;
+                  token.clear();
+                }else token+=c;
+              }
+              if(token=="${school_class}")relevant=true;
+              if(!relevant)continue;
+            }
+            std::string art=raw_text(e["art"]);
+            if(art.empty() && !(e["entfall"] | false))continue;
+            if(art=="Vertr")art="Vertretung";
+            else if(art=="Entf")art="Entfall";
+            else if(art=="Raum")art="Raumänderung";
+            else if(art=="Betr")art="Betreuung";
+            else if(art=="Taus")art="Tausch";
+            else if(art=="Freis")art="Freistunde";
+            else if(art.empty())art="Entfall";
+            std::string period=raw_text(e["stunde"]);
+            if(period.empty())period=raw_text(e["stunden"]);
+            std::string subject=raw_text(e["fach_original"]);
+            if(subject.empty())subject=raw_text(e["fach_alt"]);
+            if(subject.empty())subject=raw_text(e["fach"]);
+            std::string entry=period.empty()?"":period+". Std. · ";
+            entry+=subject.empty()?art:subject+" · "+art;
+            std::string teacher=raw_text(e["vertreter"]),room=raw_text(e["raum"]);
+            if(!teacher.empty())entry+=" · "+teacher;
+            if(!room.empty())entry+=" · R "+room;
+            std::string note=raw_text(e["hinweis"]);
+            if(!note.empty())entry+=" · "+note;
+            substitutions_today.push_back(entry);
+          }
+        }
+      }
+    }
+    if(!notices.empty()&&card(5,rx,ny,rw,nh,notices+short_date(target))){
+      text(rx+23,ny+9,"KFG · Nachricht des Tages",id(font_lesson),INK,rw-46);
+      auto notice_lines=lines(notices,id(ui_small),rw-48);
+      for(size_t i=0;i<notice_lines.size()&&i<3;i++)text(rx+23,ny+53+int(i)*29,notice_lines[i],id(ui_small),INK,rw-46);
+    }
+    const int sy=ny+(notices.empty()?0:nh+12),sh=150;
+    if(!substitutions_today.empty()){
+      std::string key=short_date(target);
+      for(const auto& change:substitutions_today)key+=change;
+      if(card(5+2,rx,sy,rw,sh,key)){
+        text(rx+23,sy+9,"KFG · Vertretungen",id(font_lesson),INK,rw-46);
+        const size_t visible=std::min(size_t(substitutions_today.size()>3?2:3),substitutions_today.size());
+        for(size_t i=0;i<visible;i++)
+          text(rx+23,sy+53+int(i)*29,substitutions_today[i],id(ui_small),INK,rw-46);
+        if(substitutions_today.size()>visible)
+          text(rx+23,sy+53+int(visible)*29,"+ "+std::to_string(substitutions_today.size()-visible)+" weitere",id(ui_small),INK,rw-46);
+      }
+    }
+    const int wy=ly+lh+12,wh=H-wy-17;
+    std::string upcoming;
+    if(controls["leistungskontrollen"].is<JsonArray>()){
+      JsonArray arr=controls["leistungskontrollen"].as<JsonArray>();int64_t earliest=INT64_MAX;
+      for(JsonObject item:arr){int64_t d=parse_date(raw_text(item["datum"]));if(d<today_day||d>=earliest)continue;
+        std::string title=raw_text(item["summary"]);if(title.empty())title=raw_text(item["art"])+" "+raw_text(item["kurs"]);
+        if(d>=0){earliest=d;upcoming=short_date(d)+" · "+title;}
+      }
+    }
+    if(upcoming.empty()&&cal["events"].is<JsonArray>()){
+      JsonArray evts=cal["events"].as<JsonArray>();int64_t earliest=INT64_MAX;
+      for(JsonObject item:evts){int64_t d=parse_date(raw_text(item["date"]));
+        if(d<today_day||d>=earliest)continue;
+        earliest=d;upcoming=short_date(d)+" · "+raw_text(item["summary"]);
+      }
+    }
+    if(upcoming.empty()&&homework["aufgaben"].is<JsonArray>()){
+      JsonArray arr=homework["aufgaben"].as<JsonArray>();int64_t earliest=INT64_MAX;
+      for(JsonObject item:arr)if(!(item["erledigt"]|false)){
+        int64_t d=parse_date(raw_text(item["datum"]));if(d<today_day||d>=earliest)continue;
+        earliest=d;upcoming=short_date(d)+" · "+raw_text(item["fach"])+" Hausaufgabe";
+      }
+    }
+    if(card(6,lx,wy,lw,wh,upcoming)){
+      text(lx+23,wy+10,"Nicht vergessen",id(font_lesson),INK,lw-46);
+      auto task_lines=lines(upcoming.empty()?"Keine kommenden Aufgaben oder Arbeiten.":upcoming,id(ui_body),lw-46);
+      for(size_t i=0;i<task_lines.size()&&i<2;i++)text(lx+23,wy+67+int(i)*38,task_lines[i],id(ui_body),INK,lw-46);
+    }
+    const int by=H-137,bh=120;
+    const float phone=id(maxim_phone_level).state;
+    const bool phone_valid=std::isfinite(phone)&&phone>=0&&phone<=100;
+    const bool low=phone_valid&&phone<30.0f;
+    char phonebuf[32];snprintf(phonebuf,sizeof(phonebuf),"%d %%",phone_valid?int(std::floor(phone)):0);
+    const std::string phone_key=phone_valid?phonebuf:std::string("n/a");
+    if(card(3,rx,by,rw,bh,phone_key)){
+      text(rx+23,by+12,"Maxims Handy",id(font_lesson),INK,rw-46);
+      text(rx+23,by+54,phone_valid?phone_key:"Akku nicht verfügbar",id(font_start_info),INK,low?rw-280:rw-46);
+      if(low){fast_rect(rx+rw-246,by+63,222,43,INK);center(rx+rw-135,by+85,"AKKU < 30 %",id(ui_small),PAPER);}
+    }
+    return;
+  }
+  // Elisa: monochrome RMV departure board. DU only for in-page changes.

@@ -1,0 +1,537 @@
+|
+  if (id(current_page) == 7) {
+  // Scale the original logical canvas; fonts have matching native sizes.
+  const double scale = it.get_width() / 800.0;
+  const double yscale = (it.get_height() - CONTENT_TOP) / 480.0;
+  const int ox = 0;
+  const int oy = CONTENT_TOP;
+  auto px = [&](int v) { return int(std::lround(v * scale)); };
+  auto sx = [&](int v) { return ox + px(v); };
+  auto sy = [&](int v) { return oy + int(std::lround(v * yscale)); };
+  auto scaled_printf = [&](int x, int y, auto... args) {
+    it.printf(sx(x), sy(y), args...);
+  };
+  auto scaled_filled_rectangle = [&](int x, int y, int w, int h, Color c) {
+    fast_rect(sx(x), sy(y), px(x+w)-px(x), sy(y+h)-sy(y), c);
+  };
+  auto scaled_rectangle = [&](int x, int y, int w, int h, Color c) {
+    const int pw=px(x+w)-px(x), ph=sy(y+h)-sy(y);
+    for (int t=0; t<px(1) && pw>2*t && ph>2*t; ++t)
+      it.rectangle(sx(x)+t, sy(y)+t, pw-2*t, ph-2*t, c);
+  };
+  auto scaled_line = [&](int x1, int y1, int x2, int y2, Color c) {
+    for (int t=0; t<px(1); ++t) {
+      if (std::abs(x2-x1) >= std::abs(y2-y1))
+        it.line(sx(x1), sy(y1)+t, sx(x2), sy(y2)+t, c);
+      else
+        it.line(sx(x1)+t, sy(y1), sx(x2)+t, sy(y2), c);
+    }
+  };
+  auto scaled_get_text_bounds = [&](int x, int y, const char *text, auto font,
+      TextAlign align, int *x1, int *y1, int *w, int *h) {
+    it.get_text_bounds(sx(x), sy(y), text, font, align, x1, y1, w, h);
+    *x1=int(std::floor((*x1-ox)/scale));
+    *y1=int(std::floor((*y1-oy)/yscale));
+    *w=int(std::ceil(*w/scale));
+    *h=int(std::ceil(*h/yscale));
+  };
+  const uint32_t weather_t0 = millis();
+  uint32_t weather_step = weather_t0;
+  ESP_LOGD("weather_timing", "Wetter-Lambda gestartet");
+  
+  // ================================================================
+  // WEATHER PAGE
+  // ================================================================
+  const auto INK = Color::BLACK;   // physical black
+  const auto PAPER = Color::WHITE; // physical white
+  // Content already cleared once by the shared renderer.
+  
+  auto now = id(ha_time).now();
+  
+  // Helpers
+  // ---------------------------------------------------------------
+  auto valid_num = [](float value) {
+    return std::isfinite(value);
+  };
+  
+  auto weather_number = [](const std::string &raw) -> float {
+    if (raw.empty() ||
+        raw == "None" ||
+        raw == "none" ||
+        raw == "unknown" ||
+        raw == "unavailable") {
+      return NAN;
+    }
+  
+    char *end = nullptr;
+    float value = strtof(raw.c_str(), &end);
+    if (end == raw.c_str() || !std::isfinite(value))
+      return NAN;
+  
+    return value;
+  };
+  
+  auto lower = [](const char *raw) {
+    std::string s = raw ? raw : "";
+    for (char &c : s)
+      c = static_cast<char>(
+        tolower(static_cast<unsigned char>(c))
+      );
+    return s;
+  };
+  
+  auto condition_de = [&](const char *raw) -> const char * {
+    std::string c = lower(raw);
+    if (c == "sunny") return "Sonnig";
+    if (c == "clear-night") return "Klare Nacht";
+    if (c == "partlycloudy") return "Teilweise bewölkt";
+    if (c == "cloudy") return "Bewölkt";
+    if (c == "fog") return "Nebel";
+    if (c == "rainy") return "Regen";
+    if (c == "pouring") return "Starker Regen";
+    if (c == "lightning") return "Gewitter";
+    if (c == "lightning-rainy") return "Gewitter / Regen";
+    if (c == "snowy") return "Schnee";
+    if (c == "snowy-rainy") return "Schneeregen";
+    if (c == "hail") return "Hagel";
+    if (c == "windy") return "Windig";
+    if (c == "windy-variant") return "Windig / bewölkt";
+    return "Wetter";
+  };
+  
+  auto weather_glyph = [&](const char *raw) -> const char * {
+    std::string c = lower(raw);
+  
+    if (c == "sunny") return "\U000F0599";
+    if (c == "clear-night") return "\U000F0594";
+    if (c == "partlycloudy") return "\U000F0595";
+    if (c == "cloudy") return "\U000F0590";
+    if (c == "fog") return "\U000F0591";
+    if (c == "hail") return "\U000F0592";
+    if (c == "lightning") return "\U000F0593";
+    if (c == "lightning-rainy") return "\U000F067E";
+    if (c == "pouring") return "\U000F0596";
+    if (c == "rainy") return "\U000F0597";
+    if (c == "snowy") return "\U000F0598";
+    if (c == "snowy-rainy") return "\U000F067F";
+    if (c == "windy") return "\U000F059D";
+    if (c == "windy-variant") return "\U000F059E";
+    if (c == "exceptional") return "\U000F0F38";
+    return "\U000F0590";
+  };
+  
+  auto iso_date = [](const char *raw, char *out, size_t out_size) {
+    int yy = 0, mm = 0, dd = 0;
+    if (raw && sscanf(raw, "%d-%d-%d", &yy, &mm, &dd) == 3) {
+      snprintf(out, out_size, "%02d.%02d.", dd, mm);
+      return true;
+    }
+    snprintf(out, out_size, "--.--.");
+    return false;
+  };
+  
+  auto iso_time = [](const char *raw, char *out, size_t out_size) {
+    if (raw && strlen(raw) >= 16) {
+      snprintf(out, out_size, "%.5s", raw + 11);
+      return true;
+    }
+    snprintf(out, out_size, "--:--");
+    return false;
+  };
+  
+  
+  auto days_from_civil_weather = [](int y, unsigned m, unsigned d) -> int64_t {
+    y -= m <= 2;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = static_cast<unsigned>(y - era * 400);
+    const unsigned doy =
+      (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const unsigned doe =
+      yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return static_cast<int64_t>(era) * 146097 +
+           static_cast<int64_t>(doe) - 719468;
+  };
+  
+  auto weekday_short = [&](const char *raw) -> const char * {
+    static const char *wd[] = {"SO", "MO", "DI", "MI", "DO", "FR", "SA"};
+    int y = 0, m = 0, d = 0;
+    if (!raw || sscanf(raw, "%d-%d-%d", &y, &m, &d) != 3)
+      return "--";
+    const int64_t days = days_from_civil_weather(y, m, d);
+    int idx = static_cast<int>((days + 4) % 7);
+    if (idx < 0) idx += 7;
+    return wd[idx];
+  };
+  
+  // ---------------------------------------------------------------
+  // Header: current date left, status right
+  // ---------------------------------------------------------------
+  static const char *weekday_de[] = {
+    "", "Sonntag", "Montag", "Dienstag", "Mittwoch",
+    "Donnerstag", "Freitag", "Samstag"
+  };
+  
+  const char *weekday =
+    (now.day_of_week >= 1 && now.day_of_week <= 7)
+      ? weekday_de[now.day_of_week]
+      : "";
+  
+  char header_date[48];
+  snprintf(
+    header_date,
+    sizeof(header_date),
+    "%s, %02d.%02d.%04d",
+    weekday,
+    now.day_of_month,
+    now.month,
+    now.year
+  );
+  
+  scaled_printf(
+    18,
+    8,
+    id(font_day),
+    INK,
+    "%s",
+    header_date
+  );
+  
+  scaled_line(18, 37, 782, 37, INK);
+  
+  // ---------------------------------------------------------------
+  // Forecast data
+  // daily_json contains TODAY + five following days.
+  // ---------------------------------------------------------------
+  auto daily_doc = esphome::json::parse_json(
+    id(epaper_weather_daily).state.empty()
+      ? "[]"
+      : id(epaper_weather_daily).state
+  );
+  
+  bool daily_valid =
+    !daily_doc.isNull() &&
+    !daily_doc.overflowed() &&
+    daily_doc.is<JsonArray>();
+  
+  JsonArray daily_items;
+  if (daily_valid)
+    daily_items = daily_doc.as<JsonArray>();
+  
+  // ---------------------------------------------------------------
+  // Sunrise / sunset for the weather page
+  // ---------------------------------------------------------------
+  auto weather_hhmm_from_iso = [](const std::string &value,
+                                  char *out,
+                                  size_t out_size) {
+    if (out_size < 6) return false;
+  
+    if (value.empty() ||
+        value == "unknown" ||
+        value == "unavailable") {
+      snprintf(out, out_size, "--:--");
+      return false;
+    }
+  
+    int year = 0, month = 0, day = 0;
+    int hour = 0, minute = 0, second = 0;
+    char tz_sign = '+';
+    int tz_hour = 0, tz_minute = 0;
+  
+    int matched = sscanf(
+      value.c_str(),
+      "%d-%d-%dT%d:%d:%d%c%d:%d",
+      &year, &month, &day,
+      &hour, &minute, &second,
+      &tz_sign, &tz_hour, &tz_minute
+    );
+  
+    bool utc_z = false;
+    if (matched < 9) {
+      matched = sscanf(
+        value.c_str(),
+        "%d-%d-%dT%d:%d:%dZ",
+        &year, &month, &day,
+        &hour, &minute, &second
+      );
+      utc_z = (matched == 6);
+    }
+  
+    if (matched < 9 && !utc_z) {
+      snprintf(out, out_size, "--:--");
+      return false;
+    }
+  
+    auto days_from_civil = [](int y, unsigned m, unsigned d) -> int64_t {
+      y -= m <= 2;
+      const int era = (y >= 0 ? y : y - 399) / 400;
+      const unsigned yoe = static_cast<unsigned>(y - era * 400);
+      const unsigned doy =
+        (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+      const unsigned doe =
+        yoe * 365 + yoe / 4 - yoe / 100 + doy;
+      return static_cast<int64_t>(era) * 146097 +
+             static_cast<int64_t>(doe) - 719468;
+    };
+  
+    int64_t epoch64 =
+      days_from_civil(year, month, day) * 86400LL +
+      static_cast<int64_t>(hour) * 3600LL +
+      static_cast<int64_t>(minute) * 60LL +
+      second;
+  
+    if (!utc_z) {
+      const int offset_seconds =
+        (tz_hour * 60 + tz_minute) * 60;
+      if (tz_sign == '+')
+        epoch64 -= offset_seconds;
+      else if (tz_sign == '-')
+        epoch64 += offset_seconds;
+    }
+  
+    auto local_time =
+      esphome::ESPTime::from_epoch_local(
+        static_cast<time_t>(epoch64)
+      );
+  
+    snprintf(
+      out,
+      out_size,
+      "%02d:%02d",
+      std::max(0, std::min(23, static_cast<int>(local_time.hour))),
+      std::max(0, std::min(59, static_cast<int>(local_time.minute)))
+    );
+    return true;
+  };
+  
+  char weather_sunrise[8];
+  char weather_sunset[8];
+  
+  weather_hhmm_from_iso(
+    id(sunrise_time).state,
+    weather_sunrise,
+    sizeof(weather_sunrise)
+  );
+  weather_hhmm_from_iso(
+    id(sunset_time).state,
+    weather_sunset,
+    sizeof(weather_sunset)
+  );
+  
+  ESP_LOGD(
+    "weather_timing",
+    "Header/JSON/Sonnenzeiten nach %u ms (+%u ms)",
+    static_cast<unsigned>(millis() - weather_t0),
+    static_cast<unsigned>(millis() - weather_step)
+  );
+  weather_step = millis();
+  
+  // ---------------------------------------------------------------
+  // GC16 WEATHER DESIGN. Native 4-bit shades, no DU re-rendering.
+  // ---------------------------------------------------------------
+  const Color W01(17,17,17), W03(51,51,51), W06(102,102,102);
+  const Color W08(136,136,136), W0A(170,170,170), W0C(204,204,204);
+  const Color W0D(221,221,221), W0E(238,238,238);
+  auto pill = [&](int x,int y,int w,int h,Color bg){
+    scaled_filled_rectangle(x,y,w,h,bg);
+    scaled_rectangle(x,y,w,h,W0D);
+  };
+  auto val = [&](JsonVariant v)->float{
+    return (v.is<float>()||v.is<double>()||v.is<int>()||v.is<long>())
+        ? v.as<float>() : NAN;
+  };
+  const float out_temp=weather_number(id(weather_outdoor_temperature).state);
+  const float feel=weather_number(id(weather_apparent_temperature).state);
+  const float humid=weather_number(id(weather_outdoor_humidity).state);
+  const float pressure=weather_number(id(weather_pressure).state);
+  const float wind=weather_number(id(weather_wind_speed).state);
+  const float indoor_temp=id(weather_indoor_temperature).state;
+  const float indoor_hum=id(weather_indoor_humidity).state;
+  const char *current_condition=id(epaper_weather_condition).state.c_str();
+  float today_high=NAN,today_low=NAN;
+  if(daily_valid && daily_items.size()){
+    JsonObject d=daily_items[0].as<JsonObject>();
+    today_high=val(d["high"]);today_low=val(d["low"]);
+  }
+  // HERO: left symbol, prominent live temperature and indoor data.
+  pill(8,44,784,155,W0E);
+  scaled_printf(122,49,id(mdi_weather_xlarge),W03,TextAlign::TOP_CENTER,
+                "%s",weather_glyph(current_condition));
+  if(valid_num(out_temp))scaled_printf(361,61,id(font_weather_current_temp),INK,
+                       TextAlign::TOP_CENTER,"%.0f°",out_temp);
+  else scaled_printf(361,61,id(font_weather_current_temp),INK,
+                       TextAlign::TOP_CENTER,"--°");
+  scaled_printf(361,147,id(font_weather_condition),W03,TextAlign::TOP_CENTER,
+                "%s",condition_de(current_condition));
+  scaled_line(520,55,520,185,W0C);
+  scaled_printf(540,55,id(font_small),W06,"INNENRAUM");
+  if(valid_num(indoor_temp))scaled_printf(540,74,id(font_start_weather),INK,"%.1f °C",indoor_temp);
+  else scaled_printf(540,74,id(font_start_weather),INK,"--.- °C");
+  if(valid_num(indoor_hum))scaled_printf(540,116,id(font_lesson),W03,"%.0f %% Luftfeuchte",indoor_hum);
+  else scaled_printf(540,116,id(font_lesson),W03,"Luftfeuchte --");
+  scaled_line(540,142,779,142,W0C);
+  if(valid_num(feel))scaled_printf(540,150,id(font_meta),W03,"Gefühlt %.0f°",feel);
+  if(valid_num(humid))scaled_printf(660,150,id(font_meta),W03,"Außen %.0f%%",humid);
+  if(valid_num(wind))scaled_printf(540,168,id(font_meta),W03,"Wind %.1f",wind);
+  if(valid_num(pressure))scaled_printf(660,168,id(font_meta),W03,"%.0f hPa",pressure);
+  if(valid_num(today_low)&&valid_num(today_high))
+    scaled_printf(25,179,id(font_meta),W03,"Heute %.0f° / %.0f°",today_low,today_high);
+  scaled_printf(284,179,id(font_meta),W03,"Sonne %s - %s",weather_sunrise,weather_sunset);
+  
+  // Parse every forecast point by date AND hour (not just the hour!):
+  // correct over midnight; no reuse of today's 00:00 for tomorrow.
+  auto hourly_doc=esphome::json::parse_json(
+    id(epaper_weather_hourly).state.empty()?"[]":id(epaper_weather_hourly).state);
+  const bool hourly_valid=!hourly_doc.isNull()&&!hourly_doc.overflowed()&&hourly_doc.is<JsonArray>();
+  JsonArray hourly_items=hourly_doc.as<JsonArray>();
+  const int count=8,now_minutes=now.hour*60+now.minute;
+  const int first=((now_minutes/180)+1)*180;
+  const int64_t today_days=days_from_civil_weather(now.year,now.month,now.day_of_month);
+  float t[8],mm[8],chance[8];int hours[8];
+  for(int i=0;i<count;i++){
+    t[i]=mm[i]=chance[i]=NAN;
+    const int at=first+i*180;
+    hours[i]=(at%1440)/60;
+    const auto d=esphome::ESPTime::from_epoch_utc((today_days+at/1440)*86400);
+    char day[15];snprintf(day,sizeof(day),"%04d-%02d-%02d",d.year,d.month,d.day_of_month);
+    if(!hourly_valid)continue;
+    for(JsonObject sample:hourly_items){
+      const char *stamp=sample["datetime"]|"";
+      if(strlen(stamp)<13 || strncmp(stamp,day,10)!=0)continue;
+      int hh=-1;if(sscanf(stamp+11,"%2d",&hh)!=1 || hh!=hours[i])continue;
+      t[i]=val(sample["temperature"]);
+      mm[i]=val(sample["precipitation"]);
+      chance[i]=val(sample["precipitation_probability"]);
+      break;
+    }
+  }
+  // Combined 24-hour forecast: temperature on the LEFT; precipitation on
+  // the RIGHT (mm, or % only if the weather source provides no mm values).
+  // Former rain panel (62 logical px): 41 px to this plot, 21 px to outlook.
+  pill(8,207,784,161,PAPER);
+  scaled_printf(21,213,id(font_small),INK,"TEMPERATUR & REGEN · 24 STUNDEN");
+  bool have_mm=false,have_pop=false;
+  float rain_max=0.0f;
+  for(int i=0;i<count;i++){
+    if(valid_num(mm[i])){have_mm=true;rain_max=std::max(rain_max,std::max(0.0f,mm[i]));}
+    if(valid_num(chance[i]))have_pop=true;
+  }
+  // Missing mm isn't 0 mm: % is clearly labelled rather than passed off as rainfall.
+  const bool rain_in_mm=have_mm;
+  const bool rain_available=have_mm||have_pop;
+  const float rain_ceiling=rain_in_mm
+      ? std::max(1.0f,std::ceil(rain_max*2.0f)/2.0f) : 100.0f;
+  scaled_printf(770,213,id(font_meta),W06,TextAlign::TOP_RIGHT,
+                rain_in_mm?"REGEN mm":"REGEN %%");
+  float tmin=1000.0f,tmax=-1000.0f;int ntemp=0;
+  for(float f:t)if(valid_num(f)){tmin=std::min(tmin,f);tmax=std::max(tmax,f);ntemp++;}
+  const int chart_x=61,chart_w=665,plot_y=251,plot_h=91;
+  const float lo=ntemp?std::floor(tmin-1.0f):0.0f;
+  const float hi=ntemp?std::ceil(tmax+1.0f):1.0f;
+  const float range=std::max(1.0f,hi-lo);
+  const float step_x=float(chart_w-26)/float(count-1);
+  auto temp_y=[&](float temp)->float {
+    return float(plot_y)+(hi-temp)*float(plot_h)/range;
+  };
+  for(int level=0;level<3;level++){
+    const int yy=plot_y+level*plot_h/2;
+    scaled_line(chart_x,yy,chart_x+chart_w,yy,W0D);
+    if(ntemp)scaled_printf(16,yy-6,id(font_meta),W06,"%.0f°",hi-range*level/2.0f);
+    if(rain_available){
+      const float mark=rain_ceiling*(2-level)/2.0f;
+      scaled_printf(775,yy-6,id(font_meta),W06,TextAlign::TOP_RIGHT,
+                    rain_in_mm?"%.1f":"%.0f%%",mark);
+    }
+  }
+  // Precipitation bars start at the bottom and rise into the chart.
+  // Three distinct Gray4 shades keep them legible behind the black curve.
+  if(rain_available){
+    for(int i=0;i<count;i++){
+      const float f=rain_in_mm?mm[i]:chance[i];
+      if(!valid_num(f)||f<=0.0f)continue;
+      const int cx=chart_x+13+(int)std::lround(i*step_x);
+      const int bh=std::max(1,(int)std::lround(plot_h*std::min(f,rain_ceiling)/rain_ceiling));
+      const int bar_w=32;
+      scaled_filled_rectangle(cx-bar_w/2,plot_y+plot_h-bh,bar_w,bh,W0C);
+      scaled_filled_rectangle(cx-bar_w/2,plot_y+plot_h-bh,10,bh,W08);
+      scaled_filled_rectangle(cx+bar_w/2-9,plot_y+plot_h-bh,9,bh,W0D);
+    }
+  }
+  // Shape-preserving cubic Hermite: smooth transitions without overshoot;
+  // thicker 7-pixel stroke, drawn AFTER bars for clear visual priority.
+  if(ntemp){
+    float slope[count];
+    for(int i=0;i<count;i++){
+      slope[i]=0.0f;
+      if(!valid_num(t[i]))continue;
+      const bool l=i>0&&valid_num(t[i-1]);
+      const bool r=i+1<count&&valid_num(t[i+1]);
+      if(l&&r){
+        const float dl=t[i]-t[i-1],dr=t[i+1]-t[i];
+        if(dl*dr>0.0f)slope[i]=2.0f*dl*dr/(dl+dr);
+      }else if(r)slope[i]=t[i+1]-t[i];
+      else if(l)slope[i]=t[i]-t[i-1];
+    }
+    for(int i=0;i<count-1;i++){
+      if(!valid_num(t[i])||!valid_num(t[i+1]))continue;
+      const float delta=t[i+1]-t[i];
+      if(std::fabs(delta)<0.0001f){slope[i]=0;slope[i+1]=0;}
+      else{
+        const float aa=slope[i]/delta,bb=slope[i+1]/delta;
+        const float norm=aa*aa+bb*bb;
+        if(norm>9.0f){
+          const float factor=3.0f/std::sqrt(norm);
+          slope[i]=factor*aa*delta;slope[i+1]=factor*bb*delta;
+        }
+      }
+      const float x0=float(chart_x+13)+i*step_x;
+      const int segments=24;
+      int last_x=sx((int)std::lround(x0));
+      int last_y=sy((int)std::lround(temp_y(t[i])));
+      for(int j=1;j<=segments;j++){
+        const float u=float(j)/segments,u2=u*u,u3=u2*u;
+        const float temp=(2*u3-3*u2+1)*t[i]+(u3-2*u2+u)*slope[i]
+                         +(-2*u3+3*u2)*t[i+1]+(u3-u2)*slope[i+1];
+        const int px=sx((int)std::lround(x0+u*step_x));
+        const int py=sy((int)std::lround(temp_y(temp)));
+        for(int offset=-3;offset<=3;offset++)
+          it.line(last_x,last_y+offset,px,py+offset,
+                  (offset<=-3||offset>=3)?W08:INK);
+        last_x=px;last_y=py;
+      }
+    }
+    for(int i=0;i<count;i++){
+      if(!valid_num(t[i]))continue;
+      const int xx=chart_x+13+(int)std::lround(i*step_x);
+      const int yy=(int)std::lround(temp_y(t[i]));
+      it.filled_circle(sx(xx),sy(yy),4,INK);
+      // Temperatures near the top are labelled inside rather than over title.
+      const int label_y=yy<plot_y+16?yy+8:yy-18;
+      scaled_printf(xx,label_y,id(font_meta),INK,TextAlign::TOP_CENTER,"%.0f°",t[i]);
+    }
+  }else scaled_printf(95,283,id(font_lesson),W06,"Temperaturprognose fehlt");
+  for(int i=0;i<count;i++){
+    const int xx=chart_x+13+(int)std::lround(i*step_x);
+    scaled_printf(xx,349,id(font_meta),W03,TextAlign::TOP_CENTER,"%02d:00",hours[i]);
+  }
+  if(!rain_available)scaled_printf(770,229,id(font_meta),W06,TextAlign::TOP_RIGHT,
+                                  "Keine Niederschlagsdaten");
+  
+  // Compact 5-day tiles: background alternation + weather icons + high/low.
+  pill(8,374,784,104,PAPER);
+  scaled_printf(20,378,id(font_small),INK,"AUSBLICK · DIE NÄCHSTEN FÜNF TAGE");
+  for(int i=0;i<5;i++){
+    const int cx=86+i*155;
+    if(i%2==0)scaled_filled_rectangle(14+i*155,396,150,78,W0E);
+    if(!daily_valid || i+1>=static_cast<int>(daily_items.size()))continue;
+    JsonObject d=daily_items[i+1].as<JsonObject>();
+    const char *date=d["datetime"]|"",*cond=d["condition"]|"";
+    const float high=val(d["high"]),low=val(d["low"]);
+    scaled_printf(cx,396,id(font_lesson),INK,TextAlign::TOP_CENTER,"%s",weekday_short(date));
+    scaled_printf(cx,415,id(mdi_weather_small),W03,TextAlign::TOP_CENTER,
+                  "%s",weather_glyph(cond));
+    if(valid_num(high)&&valid_num(low))
+      scaled_printf(cx,462,id(font_meta),INK,TextAlign::TOP_CENTER,"%.0f° / %.0f°",high,low);
+  }
+  ESP_LOGD("weather_timing","Wetterseite GC16/Gray4 aufgebaut in %u ms",
+           (unsigned)(millis()-weather_t0));
+  }

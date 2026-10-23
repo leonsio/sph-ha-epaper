@@ -1,0 +1,10 @@
+# Renderer fragments share one C++ lambda scope; order is intentional.
+|
+  ${render_clock}
+  ${render_common}
+  ${render_home}
+  ${render_start}
+  ${render_maxim}
+  ${render_elisa}
+  ${render_school}
+  ${render_weather}
