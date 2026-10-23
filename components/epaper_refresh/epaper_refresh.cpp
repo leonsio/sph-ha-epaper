@@ -37,6 +37,9 @@ void EpaperRefresh::clean() {
   stage_ = 0;
   ESP_LOGI("epaper_refresh", "Panel reinigen: INIT weiss -> GC16 schwarz -> GC16 weiss");
 }
+void EpaperRefresh::preserve_partial() {
+  if (idle()) display_->*(&DisplayAccess::partial_update_count_) = 0;
+}
 void EpaperRefresh::loop() {
   if (!panel_idle_()) return;
   // IT8951's IDLE marks command submission, not physical waveform completion.

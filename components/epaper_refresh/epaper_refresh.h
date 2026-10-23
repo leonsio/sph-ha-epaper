@@ -9,6 +9,9 @@ class EpaperRefresh : public Component {
   bool idle() const;
   bool cleaning() const { return cleaning_; }
   void clean();
+  // Local UI updates must not be promoted to whole-panel updates by the
+  // driver's count threshold. Hourly UI redraws still provide maintenance.
+  void preserve_partial();
   void loop() override;
  private:
   bool panel_idle_() const;

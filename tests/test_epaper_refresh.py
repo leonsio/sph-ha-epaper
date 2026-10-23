@@ -58,6 +58,8 @@ class IT8951Display : public display::Display {
     queue_.clear(); ++standby_count;
   }
   unsigned standby_count = 0;
+  void seed_count(uint32_t value) { partial_update_count_ = value; }
+  uint32_t count() const { return partial_update_count_; }
   std::vector<UpdateMode> modes;
   std::vector<int> colors;
  protected:
@@ -130,9 +132,15 @@ int main() {
   assert(display.standby_count == 3); // boot, completed cleanup, normal UI frame
   for (int tick=0; tick<20; ++tick) refresh.loop(); // no polling while parked
   assert(refresh.idle());
+  display.seed_count(254);
+  refresh.preserve_partial();
+  assert(display.count() == 0);
   // Repeated minute ticks must each wake, synchronize and park the controller.
   for (int minute=0; minute<60; ++minute) {
     display.update_mode(it8951::UPDATE_MODE_GC16);
+    const auto count_before = display.count();
+    refresh.preserve_partial(); // busy refresh cannot mutate the counter
+    assert(display.count() == count_before);
     display.submit_finished(); refresh.loop();
     assert(!refresh.idle());
     display.finish_waveform(); refresh.loop();

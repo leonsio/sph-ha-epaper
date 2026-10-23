@@ -444,6 +444,27 @@ Zwischen den Stufen eines Cleanups wird nicht in Standby gewechselt.
 
 Für Graustufen bleibt GC16 aktiv; `full_update_every: 30` entspricht dem
 Seeed-Beispiel. Das ist ein einzelner GC16-Flächenrefresh, kein INIT-Cleanup.
+Bei ausdrücklich lokalen UI-Updates wird der interne Zähler vor dem Transfer
+zurückgesetzt, damit die 30er-Grenze nicht mitten beim Scrollen oder bei einer
+Minutenaktualisierung überraschend die ganze Fläche erfasst. Der stündliche
+vollständige Neuaufbau bleibt erhalten.
+
+Maxims Uhr und Countdown werden aus demselben Minuten-Zeitstempel in zwei
+aufeinanderfolgenden Übertragungen aktualisiert. Der native Treiber besitzt nur
+ein Dirty-Rechteck pro Übertragung: Ein gemeinsamer Transfer würde auch den
+großen Zwischenraum zwischen Uhr rechts und Countdown links aktualisieren.
+Während beider Transfers bleibt die Bedienung gesperrt. Bei unveränderten
+Ziffern wird das jeweilige Feld nicht neu gezeichnet.
+
+Beim Raumscrollen in der Haussteuerung werden Wetter-Navigation, WLAN-, Akku-
+und Schlafsymbole nicht zusammen mit dem Inhalt gezeichnet. Änderungen an diesen
+Statusanzeigen werden beim nächsten Update außerhalb eines Home-Teilupdates
+übernommen. Dadurch ziehen sie das Dirty-Rechteck nicht bis in den Kopfbereich.
+
+Nachbilder beim Wechsel von schwarzen Texten auf graue Flächen sind weiterhin
+eine mögliche Grenze der direkten GC16-Umschaltung. Für höhere Bildqualität
+`E1003 Cleanup bei Seitenwechsel` einschalten; dies gilt auch für Unterseiten
+wie Maxim Übersicht → Stundenplan. Der Standard bleibt auf Wunsch aus.
 VCOM (`1400`, Register `2`) und Temperaturvorgabe (`25 °C`) bleiben unverändert.
 Der tatsächliche VCOM-Wert eines individuellen Panels lässt sich nicht aus Fotos
 bestimmen. Das Verblassen unveränderter Bereiche passt zur bislang dauerhaft
@@ -461,7 +482,7 @@ Quellen zur Ansteuerung:
 Prüfung der Refresh-Zustandsmaschine ohne Hardware:
 
 ```sh
-python tests/test_epaper_refresh.py
+python -m unittest discover -s tests -v
 ```
 
 Für Konfigurationsprüfung und Firmware-Build werden die eigenen lokalen Schriften,
@@ -475,5 +496,7 @@ esphome compile sph-reterminal-e1003.yaml
 Der Host-Regressionstest prüft die physische Refresh-Barriere, Writer-Restore,
 Standby erst nach Wellenformende und erneutes Aktualisieren nach Standby.
 Die Cleanup-Policy wird zusätzlich mit der echten YAML-Lambda auf dem Host geprüft.
+Weitere Tests kompilieren den echten Maxim-Teilrenderer mit Zeichenrekordern
+und prüfen die Trennung der Uhr-/Countdown-Rechtecke sowie die Home-Status-Guards.
 Diese Änderung wurde ohne ESPHome-Firmware-Build und ohne angeschlossenes Panel
 validiert. Der Test ersetzt keinen Paneltest.

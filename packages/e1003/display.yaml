@@ -13,6 +13,7 @@ display:
   update_interval: never
   # Seeed/ESPHome default: periodically refresh the whole GC16 area.
   # This single-frame refresh is separate from the multi-stage cleanup.
+  # Explicit local UI transfers reset the counter; hourly redraws remain full.
   full_update_every: 30
   grayscale: true
   dithering: false

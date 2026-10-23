@@ -70,7 +70,7 @@ script:
       - delay: 3s
   - script.execute: refresh_display
 # A 5-second poll detects the HA wall-clock minute edge (no drift).
-# All four number cells are updated from ONE timestamp within ONE panel update.
+# Clock and countdown use ONE timestamp in TWO tightly bounded panel updates.
 # Long static labels stay untouched; only a digit-width/mode change triggers a layout rebuild.
 - id: maxim_refresh
   mode: single
@@ -440,6 +440,28 @@ script:
       # A full content redraw is independent of the opt-in cleaning policy.
       - script.execute: cleanup_if_due
       - script.wait: cleanup_if_due
+      # Hold refresh_busy throughout BOTH updates; neither navigation nor HA
+      # rendering may change the page/snapshot in between the two regions.
+      - if:
+          condition:
+            lambda: return id(current_page)==2 && id(maxim_partial_refresh) && id(maxim_time_part)==5 && !id(force_content) && !id(full_refresh_due);
+          then:
+          - lambda: |-
+              id(maxim_time_part)=1;
+              id(panel_refresh).preserve_partial();
+          - it8951.update:
+              id: epaper
+              mode: GC16
+          - wait_until:
+              condition:
+                lambda: return id(panel_refresh).idle();
+          - lambda: |-
+              id(maxim_time_part)=2;
+              id(maxim_partial_refresh)=true;
+      - lambda: |-
+          const bool local=id(home_partial_refresh) || id(maxim_partial_refresh) ||
+              id(start_partial_refresh) || id(solar_partial_refresh) || id(elisa_partial_refresh);
+          if(local && !id(force_content) && !id(full_refresh_due))id(panel_refresh).preserve_partial();
       - it8951.update:
           id: epaper
           mode: GC16

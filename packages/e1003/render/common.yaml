@@ -60,7 +60,7 @@
   const std::string current_weather_navigation=id(epaper_weather_condition).state;
   const bool weather_navigation_changed=current_weather_navigation!=painted_weather_navigation;
   const bool repaint_nav=(content_changed && !home_partial && !energy_partial && !solar_partial && !start_partial && !maxim_partial && !elisa_partial) ||
-      weather_navigation_changed;
+      (weather_navigation_changed && !home_partial);
   if(content_changed && !home_partial && !energy_partial && !solar_partial && !start_partial && !maxim_partial && !elisa_partial){
     const uint32_t clear_start=millis();
     it.fill(PAPER);
@@ -128,43 +128,44 @@
   static int maxim_count_hour_x=-1, maxim_count_minute_x=-1, maxim_count_digit_y=-1;
   static int maxim_count_hour_w=0, maxim_count_minute_w=0, maxim_count_digit_h=0;
   if(maxim_partial){
-    // A single immutable minute snapshot eliminates the visible offset between
-    // clock and countdown. Clear to PAPER and draw the final values before
-    // the ONE IT8951 update; never send a separate "blank" frame.
-    if(id(maxim_time_part)!=5 || id(maxim_tick_epoch)<=0)return;
+    // Keep one immutable minute snapshot, but use TWO physical rectangles.
+    // The native driver only supports one bounding dirty rectangle per update.
+    // Combining clock (right) and countdown (left) also flashes the space between.
+    const int part=id(maxim_time_part);
+    if((part!=1 && part!=2) || id(maxim_tick_epoch)<=0)return;
     const auto t=esphome::ESPTime::from_epoch_local((time_t)id(maxim_tick_epoch));
     const int64_t seconds=std::max(int64_t(0),id(maxim_target_epoch)-id(maxim_tick_epoch));
     const int64_t total_minutes=(seconds+59)/60;
     const int64_t h=total_minutes/60,m=total_minutes%60;
     unsigned changed=0;
-    if(maxim_clock_hour_x>=0 && t.hour!=id(maxim_clock_hours_value)){
+    if(part==1 && maxim_clock_hour_x>=0 && t.hour!=id(maxim_clock_hours_value)){
       char digits[8];snprintf(digits,sizeof(digits),"%02d",t.hour);
       fast_rect(maxim_clock_hour_x,maxim_clock_digit_y,maxim_clock_digit_w,maxim_clock_digit_h,PAPER);
       text(maxim_clock_hour_x+3,maxim_clock_text_y,digits,id(font_maxim_clock),INK,maxim_clock_digit_w-6);
       id(maxim_clock_hours_value)=t.hour;changed++;
     }
-    if(maxim_clock_minute_x>=0 && t.minute!=id(maxim_clock_minutes_value)){
+    if(part==1 && maxim_clock_minute_x>=0 && t.minute!=id(maxim_clock_minutes_value)){
       char digits[8];snprintf(digits,sizeof(digits),"%02d",t.minute);
       fast_rect(maxim_clock_minute_x,maxim_clock_digit_y,maxim_clock_digit_w,maxim_clock_digit_h,PAPER);
       text(maxim_clock_minute_x+3,maxim_clock_text_y,digits,id(font_maxim_clock),INK,maxim_clock_digit_w-6);
       id(maxim_clock_minutes_value)=t.minute;changed++;
     }
-    if(id(maxim_target_epoch)>0 && h>0 && maxim_count_hour_x>=0 && h!=id(maxim_school_hours_value)){
+    if(part==2 && id(maxim_target_epoch)>0 && h>0 && maxim_count_hour_x>=0 && h!=id(maxim_school_hours_value)){
       const std::string digits=std::to_string(h);
       fast_rect(maxim_count_hour_x,maxim_count_digit_y,maxim_count_hour_w,maxim_count_digit_h,PAPER);
       text(maxim_count_hour_x+maxim_count_hour_w-width(digits,id(font_lesson))-2,
            maxim_count_digit_y+2,digits,id(font_lesson),INK,maxim_count_hour_w);
       id(maxim_school_hours_value)=h;changed++;
     }
-    if(id(maxim_target_epoch)>0 && maxim_count_minute_x>=0 && m!=id(maxim_school_minutes_value)){
+    if(part==2 && id(maxim_target_epoch)>0 && maxim_count_minute_x>=0 && m!=id(maxim_school_minutes_value)){
       const std::string digits=std::to_string(m);
       fast_rect(maxim_count_minute_x,maxim_count_digit_y,maxim_count_minute_w,maxim_count_digit_h,PAPER);
       text(maxim_count_minute_x+maxim_count_minute_w-width(digits,id(font_lesson))-2,
            maxim_count_digit_y+2,digits,id(font_lesson),INK,maxim_count_minute_w);
       id(maxim_school_minutes_value)=int(m);changed++;
     }
-    ESP_LOGI("maxim_time","Uhr + Countdown: %u Zahlenfelder im selben Frame (%02d:%02d / %lld Std %lld Min)",
-             changed,t.hour,t.minute,(long long)h,(long long)m);
+    ESP_LOGI("maxim_time","Teilbereich %d: %u Zahlenfelder (snapshot=%lld)",
+             part,changed,(long long)id(maxim_tick_epoch));
     id(maxim_time_part)=0;
     return;
   }
@@ -229,7 +230,7 @@
   const int wx=W-142;
   const int sleep_state=id(sleep_indicator)?1:0;
   const int sleep_x=wx-36;
-  if(repaint_nav || sleep_state!=painted_sleep){
+  if(!home_partial && (repaint_nav || sleep_state!=painted_sleep)){
     fast_rect(sleep_x-24,16,48,52,PAPER);
     if(sleep_state){
       center(sleep_x,42,"\U000F04B2",id(mdi_status),INK);
@@ -238,7 +239,7 @@
   }
   float rssi=id(wifi_rssi).state;
   int level=wifi::global_wifi_component->is_connected() && std::isfinite(rssi) ? (rssi>=-55?4:rssi>=-65?3:rssi>=-75?2:1):0;
-  if(repaint_nav || level!=painted_wifi){
+  if(!home_partial && (repaint_nav || level!=painted_wifi)){
   fast_rect(wx-2,20,50,48,PAPER);
   for(int i=0;i<4;i++){int h=9+8*i;it.rectangle(wx+i*11,60-h,8,h,INK);if(i<level)fast_rect(wx+i*11,60-h,8,h,INK);}
   if(!level)it.line(wx,25,wx+42,62,INK);
@@ -250,7 +251,7 @@
   // ESPHome E1003 GPIO1 is battery voltage, not a charger-state pin.
   // Mark external USB power ONLY when a real HA binary sensor says ON.
   const int usb_power=id(e1003_usb_power).has_state()? (id(e1003_usb_power).state?1:0) : -1;
-  if(repaint_nav || battery_pixels!=painted_battery || usb_power!=painted_usb){
+  if(!home_partial && (repaint_nav || battery_pixels!=painted_battery || usb_power!=painted_usb)){
     fast_rect(bx-2,24,72,42,PAPER);
     it.rectangle(bx,29,60,30,INK);fast_rect(bx+60,38,6,12,INK);
     if(std::isfinite(battery)){
