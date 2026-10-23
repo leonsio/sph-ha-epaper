@@ -18,6 +18,7 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     cg.add(var.set_display(await cg.get_variable(config["display_id"])))
+    cg.add_library("pngle", "1.1.0")
     esp32.require_fatfs()
     # Mounting FAT does not enable opendir/readdir/stat in ESPHome.
     esp32.require_vfs_dir()
