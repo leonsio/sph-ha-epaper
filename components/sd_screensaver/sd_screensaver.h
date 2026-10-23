@@ -7,7 +7,8 @@
 #include <vector>
 
 namespace esphome::sd_screensaver {
-// Retained only across deep sleep. Other resets deliberately restore the UI.
+// Retained across deep sleep and software resets; a real battery power-cycle
+// loses this marker and is therefore detectable independently of ESP reset codes.
 bool sleeping_screensaver_input_wake();
 struct SleepState { uint32_t magic; bool active; bool clock_active; uint32_t clock_minute; char last_file[256]; };
 class DisplayAccess : public it8951::IT8951Display {
@@ -76,8 +77,11 @@ class SDScreensaver : public Component {
   int width_{0}, height_{0};
   display::display_writer_t boot_writer_{};
   bool boot_cleanup_active_{false};
+  bool boot_cleanup_cold_start_{false};
   bool boot_cleanup_pause_pending_{false};
   uint8_t boot_cleanup_stage_{0};
   uint32_t boot_cleanup_pause_until_{0};
+  uint32_t boot_cleanup_start_after_{0};
+  uint32_t user_full_refresh_until_{0};
 };
 } // namespace
