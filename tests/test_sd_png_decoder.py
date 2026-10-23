@@ -38,7 +38,7 @@ class SdPngDecoderTest(unittest.TestCase):
 #include <vector>
 #include <chrono>
 #include <pngle.h>
-template<class T>struct RAMAllocator{enum{ALLOC_INTERNAL=2};RAMAllocator()=default;explicit RAMAllocator(int){} T* allocate(size_t n){return (T*)malloc(n);}void deallocate(T*p,size_t){free(p);}};
+template<class T>struct RAMAllocator{enum{ALLOC_INTERNAL=2};RAMAllocator()=default;explicit RAMAllocator(int){} T* allocate(size_t n){if(n<8192 && getenv("SD_TEST_NO_ROW"))return nullptr;return (T*)malloc(n);}void deallocate(T*p,size_t){free(p);}};
 static uint32_t micros(){return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 struct {void feed_wdt(){}} App;
 #define ESP_LOGW(tag,...) fprintf(stderr,__VA_ARGS__)
@@ -113,6 +113,20 @@ FILE*f=fopen(argv[4],"wb");fwrite(out.data(),1,out.size(),f);fclose(f);
                 with self.subTest(path=path.name, width=width, height=height):
                     self.check_pixels(path, width, height)
 
+    def test_row_buffer_fallback(self):
+        image = self.Image.new("RGBA", (31, 19), (57, 57, 57, 255))
+        path = self.work / "fallback.png"
+        image.save(path)
+        previous = os.environ.get("SD_TEST_NO_ROW")
+        os.environ["SD_TEST_NO_ROW"] = "1"
+        try:
+            self.check_pixels(path, 31, 19)
+        finally:
+            if previous is None:
+                del os.environ["SD_TEST_NO_ROW"]
+            else:
+                os.environ["SD_TEST_NO_ROW"] = previous
+
     def test_invalid_files(self):
         image = self.Image.new("RGBA", (31, 19), (20, 40, 60, 128))
         path = self.work / "invalid.png"
@@ -130,3 +144,4 @@ FILE*f=fopen(argv[4],"wb");fwrite(out.data(),1,out.size(),f);fclose(f);
 
 if __name__ == "__main__":
     unittest.main()
+
