@@ -19,6 +19,8 @@ async def to_code(config):
     await cg.register_component(var, config)
     cg.add(var.set_display(await cg.get_variable(config["display_id"])))
     esp32.require_fatfs()
+    # Mounting FAT does not enable opendir/readdir/stat in ESPHome.
+    esp32.require_vfs_dir()
     for name in ("fatfs", "sdmmc", "esp_driver_sdspi"):
         esp32.include_builtin_idf_component(name)
 
