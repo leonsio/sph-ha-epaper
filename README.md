@@ -430,7 +430,8 @@ ist unabhängig vom Neuzeichnen der Oberfläche konfigurierbar:
 | E1003 Full Refresh Intervall | Aus | Optional vollständiger GC16-Neuaufbau alle 15, 30 oder 60 Minuten; auch im Screensaver |
 
 Ein erzwungener Neuaufbau, ein Seitenwechsel, ein Minutenupdate oder ein
-Intervall lösen keine mehrstufige Reinigung aus. Die bisherigen internen IDs
+Intervall lösen für normale UI-Seiten und Uhren keine mehrstufige Reinigung aus.
+Vor jedem SD-Bild erfolgt unabhängig davon immer eine vollständige Reinigung. Die bisherigen internen IDs
 der Optionen bleiben erhalten; ihre Anzeigenamen wurden angepasst. Nach einer Reinigung werden die UI-Caches
 ungültig gemacht, damit der komplette Inhalt wieder erscheint.
 Die Seitenwechsel-Option wartet nur auf den tatsächlichen Hardwareabschluss.
@@ -505,7 +506,8 @@ Statusanzeigen werden beim nächsten Update außerhalb eines Home-Teilupdates
 Nachbilder beim Wechsel von schwarzen Texten auf graue Flächen sind weiterhin
 eine mögliche Grenze der direkten GC16-Umschaltung. Die Seitenwechsel-Option
 erzwingt jetzt ausschließlich einen GC16-Neuaufbau; die frühere mehrstufige
-Reinigung ist auf Neustarts beschränkt. Der Standard bleibt auf Wunsch aus.
+Reinigung erfolgt bei aktivierter Boot-Option nach Neustarts und immer vor jedem
+SD-Bild. Für normale Seitenwechsel bleibt der Standard auf Wunsch aus.
 VCOM (`1400`, Register `2`) und Temperaturvorgabe (`25 °C`) bleiben unverändert.
 Der tatsächliche VCOM-Wert eines individuellen Panels lässt sich nicht aus Fotos
 bestimmen. Das Verblassen unveränderter Bereiche passt zur bislang dauerhaft
@@ -638,3 +640,26 @@ sowie die Speicherregion des Decoders. Kleine Headerzugriffe, Allokation,
 Dateisuche und Panel-Refresh sind in diesen beiden Teilzeiten nicht enthalten.
 Ob gepuffertes Lesen oder Decodieren die bisherige Ladezeit dominierte und
 wie stark die Optimierung wirkt, muss mit diesen Werten am Gerät geprüft werden.
+
+
+Vor jedem neu geladenen SD-Bild (PNG, BMP oder Gray4) führt
+`screensaver_show` jetzt zwingend **INIT weiß → GC16 schwarz → GC16 weiß**
+aus, wartet auf die physische Fertigstellung und zeigt erst danach das Bild
+mit GC16. Ein bloßer vollständiger GC16-Bildtransfer wurde bereits verwendet;
+der zusätzliche Reinigungszyklus soll die im Foto sichtbaren alten
+Navigationskonturen reduzieren. Er ist unabhängig von den optionalen
+UI-Seitenwechsel-/Intervall-Einstellungen. Digitale und analoge Uhren
+behalten ihre Teilupdates. Das Bild wird zuerst erfolgreich geladen, damit
+eine unlesbare Datei keinen leeren gereinigten Bildschirm hinterlässt.
+Die Reinigung verlängert den sichtbaren Bildwechsel; ihre Wirkung muss am
+Panel geprüft werden.
+
+Bei einem nicht interlaced PNG in exakt der Displayauflösung packt der
+Zeichenpfad jetzt eine 4-Bit-Zeile im internen RAM (936 Byte bei 1872 Pixeln)
+und kopiert diese einmal ins PSRAM. Deckende Graustufen umgehen die
+RGB-/Alpha-Berechnung. Bei fehlendem internem Zeilenpuffer, anderer Bildgröße
+oder Interlacing bleibt der allgemeine Zeichenpfad aktiv. Transparenz,
+Farbumrechnung und Quantisierung bleiben identisch.
+`PNG-Profil` zeigt zusätzlich `Zeilenpuffer=intern/aus`.
+Die gemessenen 12,74 Sekunden (3,48 Sekunden SD, 9,15 Sekunden Decoder/Zeichnen)
+sind der Stand vor dieser weiteren Optimierung; eine neue E1003-Messung steht aus.
