@@ -58,6 +58,7 @@ template:
             - name: Geschirrspüler
               state: sensor.geschirrspuler_betriebszustand
               endtime: sensor.geschirrspuler_programm_endzeit
+              progress: sensor.geschirrspuler_programm_fortschritt
           excluded: "{{ label_entities('epaper_ausblenden') }}"
           waste_ids: "{{ integration_entities('waste_collection_schedule') }}"
           wash_ids: "{{ integration_entities('ha_washdata') }}"
