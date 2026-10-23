@@ -177,6 +177,10 @@ esp32:
   board: seeed_xiao_esp32s3
   framework:
     type: esp-idf
+    advanced:
+      # Large composed display lambda + text/JSON calls exceeded the 8 KiB
+      # default in the reported StackOverflowHook crash. Keep OTA rollback.
+      loop_task_stack_size: 32768
   variant: ESP32S3
   flash_size: 16MB
 logger:
@@ -210,6 +214,8 @@ api:
         }
         ESP_LOGI("wake_history", "API verbunden: %s (%s), %u ms nach Wake",
                  client_info.c_str(), client_address.c_str(), (unsigned) millis());
+        ESP_LOGI("boot_diag", "Build %s %s; Reset reason=%d; Loop stack=%u Bytes",
+                 __DATE__, __TIME__, (int)esp_reset_reason(), (unsigned)ESPHOME_LOOP_TASK_STACK_SIZE);
     - script.execute: publish_wake_diagnostics
 ota:
 - platform: esphome

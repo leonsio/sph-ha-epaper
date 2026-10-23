@@ -486,6 +486,9 @@ script:
           id(refresh_busy)=false;
           id(initial_render_done)=true;
           id(displayed_page)=id(current_page);
+          ESP_LOGI("memory_diag", "Task=%s; Stackreserve Minimum=%u Bytes; freies internes RAM=%u Bytes",
+                   pcTaskGetName(nullptr), (unsigned)uxTaskGetStackHighWaterMark(nullptr),
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
       - if:
           condition:
             lambda: return !id(wake_diag_published) && id(wake_api_ms) > 0 && id(wake_display_ms) > 0;

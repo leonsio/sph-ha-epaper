@@ -520,6 +520,23 @@ validiert. Der Test ersetzt keinen Paneltest.
 
 ### Auffälligkeiten im Log vom 23.10.2026
 
+Der nachgereichte Crash-Backtrace zeigt `vApplicationStackOverflowHook` und
+bestätigt damit einen Task-Stacküberlauf. Der konkrete Task wird im Ausschnitt
+nicht genannt. Der große Renderer läuft im ESPHome-Loop; dessen Standardstack
+war bislang 8192 Byte. `esp32.framework.advanced.loop_task_stack_size` wird jetzt
+auf 32768 Byte erhöht. Das reserviert zusätzlich 24 KiB internes RAM und ist eine
+gezielte Maßnahme für den wahrscheinlichen betroffenen Task, kein Nachweis, dass
+sämtliche Absturzursachen behoben sind.
+
+Bei jedem API-Verbindungsaufbau zeigt `boot_diag` den Build-Zeitpunkt, den
+ESP-IDF-Resetgrund und die konfigurierte Stackgröße. Nach UI-Refreshes zeigt
+`memory_diag` den aktuellen Task, seine minimale bisherige Stackreserve und
+freies internes RAM. Diese Werte müssen am Gerät unter wiederholten Seitenwechseln
+beobachtet werden; Host-Tests können den Xtensa-Stackbedarf nicht bestimmen.
+OTA-Rollback bleibt aktiv. Ein früher Absturz kann deshalb weiterhin die vorige
+Firmware starten; deren Build-Zeitpunkt und bekannte alte Fehlermeldungen sind
+ein Hinweis auf diesen Wechsel.
+
 - `Screensaver Bilder >> 0` kam durch bedingungsloses Publizieren alle fünf
   Sekunden. Die Anzahl und der Dateiname werden jetzt nur initial oder bei
   Änderung veröffentlicht. Null bedeutet keine gefundenen Bilddateien und ist
