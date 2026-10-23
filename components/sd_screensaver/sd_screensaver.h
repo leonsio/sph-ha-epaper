@@ -45,6 +45,7 @@ class SDScreensaver : public Component {
   bool mount_();
   void unmount_();
   void scan_();
+  bool load_png_(const std::string &path, uint8_t *out);
   bool load_bmp_(const std::string &path, uint8_t *out);
   bool load_gray4_(const std::string &path, uint8_t *out);
   void set_pixel_(uint8_t *out,int x,int y,uint8_t gray);
