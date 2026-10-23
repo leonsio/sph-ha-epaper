@@ -584,3 +584,44 @@ ein Hinweis auf diesen Wechsel.
   Treiberfehler; die Standby-Abschlüsse sind sichtbar.
 - Der Hinweis `flash_chip: winbond` ist eine Optimierungsempfehlung. Der konkrete
   Flash-Chip wurde nicht anhand des Logs umkonfiguriert.
+
+
+### SD-Screensaver: PNG, BMP und Gray4
+
+Bilder dürfen direkt im Stammverzeichnis der SD-Karte oder unter
+`/screensaver/` liegen. Unterstützt werden `.png`, `.bmp` und `.gray4`
+(Endungen unabhängig von Groß-/Kleinschreibung). Der Firmware-Mountpunkt ist
+`/sdcard`. Beim Aktualisieren auch `components/sd_screensaver/__init__.py`
+übernehmen: Dort werden die FAT-/VFS-Verzeichnisfunktionen und
+`pngle 1.1.0` als Build-Abhängigkeit angefordert.
+
+PNGs aus OpenDithering können direkt verwendet werden. Der Decoder liest
+32-KiB-Blöcke und schreibt die entpackten Pixel schrittweise in den vorhandenen
+4-Bit-Graustufenpuffer. Es wird kein vollständiges RGB-/RGBA-Bild angelegt.
+Transparente Pixel werden auf Weiß verrechnet; das exportierte Dithering wird
+nicht erneut angewendet. Unterstützt sind Graustufen, Paletten, RGB/RGBA und
+interlaced PNGs. Bilder werden proportional skaliert und zentriert. Abmessungen
+über 8192 Pixel pro Achse, defekte CRCs und unvollständige Dateien werden
+abgelehnt; andere Bildkandidaten werden anschließend versucht.
+
+PNG spart SD-Lesedaten, benötigt aber zusätzlichen Decoder-Speicher und CPU-Zeit.
+Der Logeintrag `Bild laden: <Pfad>: <ms> ms (OK/Fehler)` misst Dateiöffnung,
+Lesen und Decodieren, ohne den anschließenden Panel-Refresh. Für einen direkten
+Vergleich dieselbe Aufnahme in PNG und BMP nutzen. Solange beide Formate auf
+der Karte liegen, können beide zufällig ausgewählt werden.
+
+Der PNG-Hosttest kompiliert den tatsächlichen SD-Lader gegen pngle v1.1.0 und
+vergleicht die Graustufenpixel mit einer unabhängigen Pillow-Referenz:
+Farbformate, Transparenz, Skalierung, optional Interlacing (ImageMagick) und
+beschädigte Dateien. Er benötigt Pillow und gcc/g++:
+
+```sh
+git clone --depth 1 --branch v1.1.0 https://github.com/kikuchan/pngle.git /tmp/pngle
+PNGLE_SOURCE_DIR=/tmp/pngle python -m unittest discover -s tests -p 'test_sd_png_decoder.py' -v
+# Optional: zusätzliche echte PNG-Datei bei 1872 x 1404 prüfen
+PNGLE_SOURCE_DIR=/tmp/pngle SD_PNG_SAMPLE=/pfad/bild.png python -m unittest discover -s tests -p 'test_sd_png_decoder.py' -v
+```
+
+Die PNG-Änderung wurde einschließlich einer OpenDithering-RGBA-Datei mit
+1872 × 1404 Pixeln auf dem Host geprüft. Firmware-Build und Ladezeitmessung
+auf dem E1003 stehen noch aus.
