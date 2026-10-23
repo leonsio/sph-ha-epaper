@@ -431,7 +431,7 @@ ist unabhängig vom Neuzeichnen der Oberfläche konfigurierbar:
 
 Ein erzwungener Neuaufbau, ein Seitenwechsel, ein Minutenupdate oder ein
 Intervall lösen für normale UI-Seiten und Uhren keine mehrstufige Reinigung aus.
-Vor jedem SD-Bild erfolgt unabhängig davon immer eine vollständige Reinigung. Die bisherigen internen IDs
+Vor jedem SD-Bild erfolgt unabhängig davon ein einzelner schneller Weiß-Refresh mit INIT. Die bisherigen internen IDs
 der Optionen bleiben erhalten; ihre Anzeigenamen wurden angepasst. Nach einer Reinigung werden die UI-Caches
 ungültig gemacht, damit der komplette Inhalt wieder erscheint.
 Die Seitenwechsel-Option wartet nur auf den tatsächlichen Hardwareabschluss.
@@ -506,8 +506,8 @@ Statusanzeigen werden beim nächsten Update außerhalb eines Home-Teilupdates
 Nachbilder beim Wechsel von schwarzen Texten auf graue Flächen sind weiterhin
 eine mögliche Grenze der direkten GC16-Umschaltung. Die Seitenwechsel-Option
 erzwingt jetzt ausschließlich einen GC16-Neuaufbau; die frühere mehrstufige
-Reinigung erfolgt bei aktivierter Boot-Option nach Neustarts und immer vor jedem
-SD-Bild. Für normale Seitenwechsel bleibt der Standard auf Wunsch aus.
+Mehrstufige Reinigung erfolgt bei aktivierter Boot-Option nach Neustarts.
+Vor SD-Bildern wird nur ein einzelner schneller INIT-Weiß-Refresh ausgeführt. Für normale Seitenwechsel bleibt der Standard auf Wunsch aus.
 VCOM (`1400`, Register `2`) und Temperaturvorgabe (`25 °C`) bleiben unverändert.
 Der tatsächliche VCOM-Wert eines individuellen Panels lässt sich nicht aus Fotos
 bestimmen. Das Verblassen unveränderter Bereiche passt zur bislang dauerhaft
@@ -643,16 +643,16 @@ wie stark die Optimierung wirkt, muss mit diesen Werten am Gerät geprüft werde
 
 
 Vor jedem neu geladenen SD-Bild (PNG, BMP oder Gray4) führt
-`screensaver_show` jetzt zwingend **INIT weiß → GC16 schwarz → GC16 weiß**
-aus, wartet auf die physische Fertigstellung und zeigt erst danach das Bild
-mit GC16. Ein bloßer vollständiger GC16-Bildtransfer wurde bereits verwendet;
-der zusätzliche Reinigungszyklus soll die im Foto sichtbaren alten
+`screensaver_show` einen einzelnen schnellen **INIT-Weiß-Refresh → Bild (GC16)**
+aus. Die beiden zusätzlichen Schwarz-/Weiß-Durchläufe entfallen. Ein bloßer vollständiger GC16-Bildtransfer wurde bereits verwendet;
+der vorgeschaltete INIT-Refresh soll die im Foto sichtbaren alten
 Navigationskonturen reduzieren. Er ist unabhängig von den optionalen
 UI-Seitenwechsel-/Intervall-Einstellungen. Digitale und analoge Uhren
 behalten ihre Teilupdates. Das Bild wird zuerst erfolgreich geladen, damit
 eine unlesbare Datei keinen leeren gereinigten Bildschirm hinterlässt.
-Die Reinigung verlängert den sichtbaren Bildwechsel; ihre Wirkung muss am
-Panel geprüft werden.
+Zwischen Weiß-Refresh und Bild gibt es keinen festen Delay. Gewartet wird
+nur auf das tatsächliche Wellenformende und den Abschluss der Controllerbefehle.
+Die Wirkung gegen Nachbilder muss am Panel geprüft werden.
 
 Bei einem nicht interlaced PNG in exakt der Displayauflösung packt der
 Zeichenpfad jetzt eine 4-Bit-Zeile im internen RAM (936 Byte bei 1872 Pixeln)
