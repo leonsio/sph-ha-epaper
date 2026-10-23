@@ -7,11 +7,14 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import re
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 DRIVER = r'''
 #pragma once
 #include <cstdint>
+#include <cassert>
 #include <functional>
 #include <utility>
 #include <vector>
@@ -34,12 +37,13 @@ namespace it8951 {
 enum class Phase { IDLE, TRANSFER };
 enum class OpType { CMD, WRITE_W, READ_WORD, CHECK_LUT_IDLE };
 enum UpdateMode { UPDATE_MODE_INIT, UPDATE_MODE_GC16 };
-constexpr uint16_t TCON_REG_RD = 16, LUTAFSR = 4644;
+constexpr uint16_t TCON_REG_RD = 16, LUTAFSR = 4644, TCON_STANDBY = 2;
 class IT8951Display : public display::Display {
  public:
   bool is_failed() const { return false; }
   void enable_loop() {}
   void update_mode(UpdateMode mode) {
+    asleep_ = false;  // production driver wakes with SYS_RUN before transfer
     // The first driver update is normally count-forced to GC16.
     if (++partial_update_count_ >= 255) mode = UPDATE_MODE_GC16;
     modes.push_back(mode);
@@ -49,14 +53,24 @@ class IT8951Display : public display::Display {
   }
   void submit_finished() { phase_ = Phase::IDLE; }
   void finish_waveform() { queue_.clear(); }
+  void finish_standby() {
+    assert(queue_.size() == 1 && queue_[0] == OpType::CMD && asleep_);
+    queue_.clear(); ++standby_count;
+  }
+  unsigned standby_count = 0;
   std::vector<UpdateMode> modes;
   std::vector<int> colors;
  protected:
-  void enqueue_(OpType op, uint16_t, uint16_t) { queue_.push_back(op); }
+  void enqueue_(OpType op, uint16_t arg, uint16_t) {
+    if (asleep_) throw 2;  // no register polls against a gated controller
+    if (arg == TCON_STANDBY) assert(queue_.empty());
+    queue_.push_back(op);
+  }
   void apply_transform_(int &, int &) const {}
   std::vector<OpType> queue_;
   Phase phase_{Phase::IDLE};
   bool initialised_{true}, update_pending_{false}, invert_colors_{false};
+  bool asleep_{false};
   uint32_t update_started_at_{0}, partial_update_count_{255};
   uint8_t *buffer_{nullptr};
   uint16_t row_width_{936}, width_{1872}, height_{1404};
@@ -75,6 +89,8 @@ int main() {
   refresh.set_display(&display);
   int ui_calls = 0;
   display.set_writer([&](display::Display &) { ++ui_calls; });
+  assert(!refresh.idle());
+  refresh.loop(); display.finish_standby();
   assert(refresh.idle());
   refresh.clean();
   assert(!refresh.idle());
@@ -90,7 +106,11 @@ int main() {
     assert(display.modes.size() == unsigned(stage + 1));
     display.finish_waveform();
     // Completion is consumed on the next loop, which may start the next stage.
-    if (stage == 2) refresh.loop();
+    if (stage == 2) {
+      refresh.loop();
+      assert(!refresh.idle());  // standby must finish before caller can render
+      display.finish_standby();
+    }
   }
   assert(refresh.idle());
   assert((display.modes == std::vector<it8951::UpdateMode>{
@@ -104,12 +124,81 @@ int main() {
   display.submit_finished(); refresh.loop();
   assert(!refresh.idle());
   display.finish_waveform(); refresh.loop();
+  assert(!refresh.idle());
+  display.finish_standby();
   assert(refresh.idle());
+  assert(display.standby_count == 3); // boot, completed cleanup, normal UI frame
+  for (int tick=0; tick<20; ++tick) refresh.loop(); // no polling while parked
+  assert(refresh.idle());
+  // Repeated minute ticks must each wake, synchronize and park the controller.
+  for (int minute=0; minute<60; ++minute) {
+    display.update_mode(it8951::UPDATE_MODE_GC16);
+    display.submit_finished(); refresh.loop();
+    assert(!refresh.idle());
+    display.finish_waveform(); refresh.loop();
+    assert(!refresh.idle());
+    display.finish_standby();
+    assert(refresh.idle());
+  }
+  assert(display.standby_count == 63);
 }
 '''
 
 
 class RefreshTest(unittest.TestCase):
+    def test_cleanup_policy(self):
+        runtime = yaml.load((ROOT / "packages/e1003/runtime.yaml").read_text(), Loader=yaml.BaseLoader)
+        policy = next(s for s in runtime["script"] if s["id"] == "cleanup_if_due")
+        expression = policy["then"][0]["if"]["condition"]["lambda"]
+        expression = re.sub(r"id\((\w+)\)", r"\1", expression)
+        harness = r'''
+#include <cassert>
+#include <cstdint>
+#include <string>
+struct { bool value=false; bool active()const{return value;} } sd_photos;
+struct Switch { bool state; } cleanup_on_boot{true}, cleanup_on_page_change{false};
+struct { std::string value="Aus"; std::string current_option()const{return value;} } cleanup_interval;
+bool cleanup_boot_pending=true;
+int current_page=0, displayed_page=-1;
+uint32_t tick=1000, cleanup_last_ms=0;
+uint32_t millis(){return tick;}
+bool due(){
+POLICY
+}
+int main(){
+  assert(due()); // default boot
+  cleanup_on_boot.state=false; assert(!due());
+  cleanup_boot_pending=false; cleanup_on_boot.state=true;
+  displayed_page=0; assert(!due());
+  current_page=2; assert(!due()); // default navigation: no cleanup
+  cleanup_on_page_change.state=true; assert(due());
+  displayed_page=2; assert(!due()); // minute/forced redraw: no cleanup
+  sd_photos.value=true; assert(due()); // enter screensaver
+  displayed_page=-2; assert(!due()); // next clock tick/image
+  sd_photos.value=false; assert(due()); // leave screensaver
+  cleanup_on_page_change.state=false;
+  cleanup_interval.value="15 Minuten";
+  tick=899999; assert(!due()); tick=900000; assert(due());
+  cleanup_last_ms=tick; assert(!due());
+  tick+=900000; assert(due());
+  cleanup_interval.value="Aus"; assert(!due());
+  cleanup_interval.value="15 Minuten";
+  cleanup_last_ms=0xFFFF0000U; tick=cleanup_last_ms+900000U;
+  assert(due()); // uint32 rollover
+}
+'''.replace("POLICY", expression)
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            (work / "policy.cpp").write_text(harness)
+            subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
+                            str(work / "policy.cpp"), "-o", str(work / "policy")], check=True)
+            subprocess.run([str(work / "policy")], check=True)
+        settings = yaml.load((ROOT / "packages/e1003/settings.yaml").read_text(), Loader=yaml.BaseLoader)
+        switches = {s["id"]: s for s in settings["switch"]}
+        self.assertEqual(switches["cleanup_on_boot"]["restore_mode"], "RESTORE_DEFAULT_ON")
+        self.assertEqual(switches["cleanup_on_page_change"]["restore_mode"], "RESTORE_DEFAULT_OFF")
+        self.assertEqual(next(s for s in settings["select"] if s["id"] == "cleanup_interval")["initial_option"], "Aus")
+
     def test_physical_completion_and_writer_restore(self):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)

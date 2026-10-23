@@ -67,10 +67,8 @@ script:
 - id: screensaver_show
   mode: single
   then:
-  - lambda: id(panel_refresh).clean();
-  - wait_until:
-      condition:
-        lambda: return id(panel_refresh).idle();
+  - script.execute: cleanup_if_due
+  - script.wait: cleanup_if_due
   - it8951.update:
       id: epaper
       mode: GC16
@@ -80,7 +78,8 @@ script:
   - lambda: |-
       id(refresh_busy)=false;
       id(initial_render_done)=true;
-      ESP_LOGI("sd_screensaver","Screensaver: Reinigung und GC16 abgeschlossen");
+      id(displayed_page)=-2;
+      ESP_LOGI("sd_screensaver","Screensaver: GC16 und Panel-Standby abgeschlossen");
   - if:
       condition:
         not:

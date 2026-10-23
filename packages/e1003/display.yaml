@@ -7,11 +7,13 @@ display:
   vcom: 1400
   vcom_register: 2
   force_temperature: 25
-  sleep_when_done: false  # epaper_refresh polls LUTAFSR while the controller is awake.
+  # epaper_refresh waits for LUTAFSR == 0, THEN sends STANDBY. The driver's
+  # early sleep would freeze register polling; leaving the panel RUN is avoided.
+  sleep_when_done: false
   update_interval: never
-  # Keep automatic count-triggered cleans rare. Explicit full redraws happen
-  # at every boot/wake and after 60min awake; normal rendering remains grayscale GC16.
-  full_update_every: 255
+  # Seeed/ESPHome default: periodically refresh the whole GC16 area.
+  # This single-frame refresh is separate from the multi-stage cleanup.
+  full_update_every: 30
   grayscale: true
   dithering: false
   update_mode: GC16
@@ -31,4 +33,3 @@ display:
       render_elisa: !include render/elisa.yaml
       render_school: !include render/school.yaml
       render_weather: !include render/weather.yaml
-

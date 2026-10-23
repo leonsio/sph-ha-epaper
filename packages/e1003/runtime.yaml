@@ -1,4 +1,30 @@
 script:
+- id: cleanup_if_due
+  mode: single
+  then:
+  - if:
+      condition:
+        lambda: |-
+          const int target=id(sd_photos).active() ? -2 : id(current_page);
+          const bool boot=id(cleanup_boot_pending) && id(cleanup_on_boot).state;
+          const bool page=!id(cleanup_boot_pending) && id(cleanup_on_page_change).state &&
+              target!=id(displayed_page);
+          const std::string interval=id(cleanup_interval).current_option().c_str();
+          const uint32_t minutes=interval=="Aus" ? 0 : std::stoul(interval);
+          const bool periodic=minutes && (uint32_t)(millis()-id(cleanup_last_ms))>=minutes*60000UL;
+          return boot || page || periodic;
+      then:
+      - lambda: id(panel_refresh).clean();
+      - wait_until:
+          condition:
+            lambda: return id(panel_refresh).idle();
+      - lambda: |-
+          id(cleanup_last_ms)=millis();
+          // Cleanup replaced the framebuffer with white. Invalidate every UI
+          // cache before the caller paints the complete current page again.
+          id(force_content)=true;
+          id(full_refresh_due)=true;
+  - lambda: id(cleanup_boot_pending)=false;
 - id: navigation_visibility_store
   mode: single
   then:
@@ -411,16 +437,9 @@ script:
           id(last_refresh_ms)=millis();
           if(id(full_refresh_due)) ESP_LOGI("ui_refresh", "Displayupdate: FULL (Boot/Wakeup oder 60min)");
           else if(id(home_partial_refresh)) ESP_LOGI("ui_refresh", "Displayupdate: PARTIAL Home");
-      # A whole-panel GC16 transfer alone does not reset unchanged black pixels.
-      # Clean first on navigation/forced redraws and periodic maintenance.
-      - if:
-          condition:
-            lambda: return id(force_content) || id(full_refresh_due) || !id(initial_render_done);
-          then:
-          - lambda: id(panel_refresh).clean();
-          - wait_until:
-              condition:
-                lambda: return id(panel_refresh).idle();
+      # A full content redraw is independent of the opt-in cleaning policy.
+      - script.execute: cleanup_if_due
+      - script.wait: cleanup_if_due
       - it8951.update:
           id: epaper
           mode: GC16
@@ -436,6 +455,7 @@ script:
           }
           id(refresh_busy)=false;
           id(initial_render_done)=true;
+          id(displayed_page)=id(current_page);
       - if:
           condition:
             lambda: return !id(wake_diag_published) && id(wake_api_ms) > 0 && id(wake_display_ms) > 0;

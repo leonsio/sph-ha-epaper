@@ -10,6 +10,7 @@ class DisplayAccess : public it8951::IT8951Display {
   using IT8951Display::phase_;
   using IT8951Display::initialised_;
   using IT8951Display::update_pending_;
+  using IT8951Display::asleep_;
   using IT8951Display::buffer_;
   using IT8951Display::row_width_;
   using IT8951Display::apply_transform_;

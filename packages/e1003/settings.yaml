@@ -1,5 +1,21 @@
 select:
 - platform: template
+  id: cleanup_interval
+  name: E1003 Cleanup Intervall
+  entity_category: config
+  icon: mdi:monitor-shimmer
+  optimistic: true
+  restore_value: true
+  initial_option: "Aus"
+  options:
+    - "Aus"
+    - "15 Minuten"
+    - "30 Minuten"
+    - "60 Minuten"
+  on_value:
+    then:
+    - lambda: esphome::global_preferences->sync();
+- platform: template
   id: screensaver_interval
   name: E1003 Screensaver Bildwechsel
   entity_category: config
@@ -67,6 +83,28 @@ select:
         esphome::global_preferences->sync();
         if(id(sd_photos).active())id(screensaver_stop).execute();
 switch:
+- platform: template
+  id: cleanup_on_boot
+  name: E1003 Cleanup beim Booten
+  entity_category: config
+  icon: mdi:monitor-shimmer
+  optimistic: true
+  restore_mode: RESTORE_DEFAULT_ON
+  on_turn_on:
+    - lambda: esphome::global_preferences->sync();
+  on_turn_off:
+    - lambda: esphome::global_preferences->sync();
+- platform: template
+  id: cleanup_on_page_change
+  name: E1003 Cleanup bei Seitenwechsel
+  entity_category: config
+  icon: mdi:monitor-shimmer
+  optimistic: true
+  restore_mode: RESTORE_DEFAULT_OFF
+  on_turn_on:
+    - lambda: esphome::global_preferences->sync();
+  on_turn_off:
+    - lambda: esphome::global_preferences->sync();
 - platform: template
   id: screensaver_switch
   name: E1003 Screensaver

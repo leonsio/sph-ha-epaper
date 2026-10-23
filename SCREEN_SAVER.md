@@ -91,24 +91,21 @@ Das erhält vorhandene Pixelwerte, kann aber bei Größenänderungen Dithering-M
 verändern. Im Vorbereitungsskript ist mit `--fit cover` alternativ Zuschnitt möglich.
 Es gibt keine zusätzliche Dithering- oder Glättungsstufe.
 
-Vor jedem Bildwechsel und jedem minütlichen Uhr-Update erfolgt jetzt eine echte
-Reinigung: **INIT (weiß) → GC16 schwarz → GC16 weiß → GC16 Inhalt**.
-Die Uhr wird vollständig neu gezeichnet, einschließlich Datum und Wetter.
-So bleiben weder unveränderte Ziffern noch Wetterdaten vom letzten Teilupdate stehen.
-Das verursacht bewusst sichtbares Blinken und dauert länger als ein Teilupdate.
+Bildwechsel und minütliche Uhr-Updates verwenden GC16. Eine mehrstufige Reinigung
+**INIT weiß → GC16 schwarz → GC16 weiß → GC16 Inhalt** erfolgt standardmäßig nur
+beim Booten (einschließlich Deep-Sleep-Wakeup). In Home Assistant sind zusätzlich
+`E1003 Cleanup bei Seitenwechsel` und `E1003 Cleanup Intervall` (Aus/15/30/60 Minuten)
+wählbar. Beide sind standardmäßig aus und gelten auch für den Screensaver.
 
-Die allgemeine Komponente `epaper_refresh` wartet nach jeder Übertragung zusätzlich
-auf `LUTAFSR == 0`. Der IT8951-Treiber kann bereits `IDLE` melden, während die
-physische Wellenform noch läuft. Erst nach deren Ende darf die nächste Übertragung
-den Bildspeicher des Controllers überschreiben. SD-Dateiverwaltung und Bilddecodierung
-bleiben in `sd_screensaver`; die Display-Reinigung gehört nicht mehr dorthin.
-Die normale Oberfläche nutzt ebenfalls GC16; bei erzwungenem Neuaufbau,
-Seitenwechsel, Boot/Wakeup und der stündlichen Wartung wird vorher gereinigt.
+Die Uhr wird vollständig neu gezeichnet, einschließlich Datum und Wetter.
+`epaper_refresh` wartet nach jeder Übertragung auf `LUTAFSR == 0` und schaltet den
+Controller anschließend in Standby. So bleibt die Panelansteuerung zwischen Updates
+nicht aktiv. Vor dem nächsten Transfer weckt der native Treiber den Controller.
+SD-Dateiverwaltung und Bilddecodierung bleiben in `sd_screensaver`.
 
 VCOM (`1400`, Register `2`) und Temperaturvorgabe (`25 °C`) bleiben unverändert.
-Das sind die E1003-Vorgaben; ein Foto allein erlaubt keine sichere Diagnose eines
-abweichenden Panel-VCOM oder eines Hardwareproblems. Der Effekt der neuen
-Reinigung muss am realen Gerät überprüft werden.
+Die Verbesserung gegen das Verblassen muss am realen Gerät überprüft werden;
+Details, Quellen und Grenzen der Diagnose stehen in der README.
 
 ## Deep Sleep / USB
 
@@ -153,5 +150,3 @@ Referenzen:
 
 
 Der Hardwaretest der überarbeiteten Display-Reinigung steht aus. Timerboot, Zeitsynchronisierung und GC16 verursachen im Deep Sleep zusätzliche Verzögerung bis zur sichtbaren Minute.
-
-

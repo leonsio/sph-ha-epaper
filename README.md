@@ -420,17 +420,43 @@ Seiten gemeinsame Zeichenhelfer verwenden. IDs und Substitutionen werden weiterh
 von ESPHome aufgelöst. Lokale `fonts/`, `icons/` und `secrets.yaml` bleiben neben
 der Hauptkonfiguration; sie werden nicht in das Paketverzeichnis verschoben.
 
-Gegen Nachbilder wird vor einem vollständigen Neuaufbau und jedem Screensaver-Update
-**INIT weiß → GC16 schwarz → GC16 weiß → Inhalt** ausgeführt. Auch unveränderte
-schwarze Flächen durchlaufen dadurch reale Farbwechsel. Zwischen den Stufen und
-vor Freigabe des Displays wird das Ende der physischen Wellenform über LUTAFSR
-abgewartet. Normale Datenupdates verwenden GC16 statt DU. Die Uhr zeichnet jede
-Minute alle Ziffern sowie Datum und Wetter neu. Sichtbares Blinken und längere
-Umschaltzeiten sind der Preis dieser auf Bildqualität ausgelegten Einstellung.
+Die mehrstufige Reinigung **INIT weiß → GC16 schwarz → GC16 weiß → Inhalt**
+ist unabhängig vom Neuzeichnen der Oberfläche konfigurierbar:
 
-Die Raumsymbole sind für höheren Kontrast schwarz. VCOM und Temperatur werden
-nicht anhand der Fotos verändert. Eine abschließende Qualitätsprüfung am Gerät
-ist erforderlich.
+| Einstellung in Home Assistant | Standard | Verhalten |
+| --- | --- | --- |
+| E1003 Cleanup beim Booten | Ein | Einmal nach Neustart, auch nach Deep-Sleep-Wakeup |
+| E1003 Cleanup bei Seitenwechsel | Aus | Optional beim Wechsel der tatsächlich angezeigten Seite, auch beim Wechsel zum/vom Screensaver |
+| E1003 Cleanup Intervall | Aus | Optional alle 15, 30 oder 60 Minuten; auch im Screensaver |
+
+Ein erzwungener Neuaufbau, ein Minutenupdate oder ein stündlicher Full-Refresh
+lösen allein keine mehrstufige Reinigung aus. Uhr und Bilderrahmen verwenden
+dieselben Cleanup-Einstellungen. Nach einer Reinigung werden die UI-Caches
+ungültig gemacht, damit der komplette Inhalt wieder erscheint.
+
+Der IT8951 bleibt nur bis zum Ende der physischen Wellenform aktiv: Die Komponente
+wartet auf `LUTAFSR == 0`, sendet anschließend `TCON_STANDBY` und gibt erst nach
+Abarbeitung des Befehls das Display frei. Der native Treiber weckt ihn vor dem
+nächsten Transfer mit `SYS_RUN`. `sleep_when_done: false` ist deshalb bewusst
+beibehalten: Standby erfolgt durch `epaper_refresh` nach der Synchronisierung.
+Die Panelansteuerung bleibt zwischen Updates nicht mehr dauerhaft im RUN-Zustand.
+Zwischen den Stufen eines Cleanups wird nicht in Standby gewechselt.
+
+Für Graustufen bleibt GC16 aktiv; `full_update_every: 30` entspricht dem
+Seeed-Beispiel. Das ist ein einzelner GC16-Flächenrefresh, kein INIT-Cleanup.
+VCOM (`1400`, Register `2`) und Temperaturvorgabe (`25 °C`) bleiben unverändert.
+Der tatsächliche VCOM-Wert eines individuellen Panels lässt sich nicht aus Fotos
+bestimmen. Das Verblassen unveränderter Bereiche passt zur bislang dauerhaft
+aktiven Panelansteuerung; die Ursache und die Wirkung des Standby-Fixes müssen
+am realen Gerät bestätigt werden. Ein speziell für E1003 dokumentierter Serienfehler
+mit genau diesem Symptombild wurde bei der Recherche nicht gefunden.
+
+Quellen zur Ansteuerung:
+
+- [Seeed ESPHome Display-Cookbook](https://wiki.seeedstudio.com/reterminal_e10xx_esphome/): GC16, Graustufen, Full-Refresh nach 30 Updates.
+- [Seeed IT8951-Referenztreiber](https://github.com/Seeed-Projects/Seeed_GxEPD2/blob/master/src/it8951/GxEPD2_it103_1872x1404.cpp): `powerOff()` nutzt `STANDBY`.
+- [IT8951-Referenzheader](https://github.com/ZinggJM/GxEPD2/blob/master/src/it8951/GxEPD2_it78_1872x1404.h): Abschalten der Panelspannungen gegen zeitliches Verblassen.
+- [ESPHome IT8951](https://esphome.io/components/display/it8951/): GC16 für Graustufen; reduzierte Graustufen-Wellenformen können falsch darstellen.
 
 Prüfung der Refresh-Zustandsmaschine ohne Hardware:
 
@@ -446,8 +472,8 @@ esphome config sph-reterminal-e1003.yaml
 esphome compile sph-reterminal-e1003.yaml
 ```
 
-Das Refactoring wurde mit ESPHome 2026.10.0 vollständig kompiliert; fehlende lokale
-Schriften und Symbole wurden dafür durch Test-Assets ersetzt. Diese Test-Assets
-und Zugangsdaten sind kein Bestandteil des Commits. Der Regressionstest prüft,
-dass keine Reinigungsstufe vor Ende der vorigen Wellenform startet und der
-normale Renderer anschließend wiederhergestellt wird. Er ersetzt keinen Paneltest.
+Der Host-Regressionstest prüft die physische Refresh-Barriere, Writer-Restore,
+Standby erst nach Wellenformende und erneutes Aktualisieren nach Standby.
+Die Cleanup-Policy wird zusätzlich mit der echten YAML-Lambda auf dem Host geprüft.
+Diese Änderung wurde ohne ESPHome-Firmware-Build und ohne angeschlossenes Panel
+validiert. Der Test ersetzt keinen Paneltest.

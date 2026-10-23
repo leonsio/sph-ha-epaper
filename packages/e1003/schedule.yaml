@@ -1,4 +1,23 @@
 interval:
+# Optional maintenance is independent of redraws and also covers screensavers.
+- interval: 30s
+  then:
+  - if:
+      condition:
+        lambda: |-
+          if(!id(initial_render_done) || id(refresh_busy) || !id(panel_refresh).idle())return false;
+          const std::string interval=id(cleanup_interval).current_option().c_str();
+          const uint32_t minutes=interval=="Aus" ? 0 : std::stoul(interval);
+          return minutes && (uint32_t)(millis()-id(cleanup_last_ms))>=minutes*60000UL;
+      then:
+      - if:
+          condition:
+            lambda: return id(sd_photos).active();
+          then:
+          - lambda: id(refresh_busy)=true;
+          - script.execute: screensaver_show
+          else:
+          - script.execute: refresh_display
 - interval: 5s
   then:
   - script.execute: screensaver_tick

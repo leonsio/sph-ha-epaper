@@ -16,6 +16,7 @@ class EpaperRefresh : public Component {
   bool barrier_pending_{false};
   uint32_t synchronized_update_{0};
   void full_panel_();
+  void standby_();
   it8951::IT8951Display *display_{nullptr};
   display::display_writer_t saved_writer_{};
   bool cleaning_{false};

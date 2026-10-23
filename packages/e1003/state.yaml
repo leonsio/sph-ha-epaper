@@ -1,4 +1,16 @@
 globals:
+- id: cleanup_boot_pending
+  type: bool
+  restore_value: false
+  initial_value: 'true'
+- id: cleanup_last_ms
+  type: uint32_t
+  restore_value: false
+  initial_value: '0'
+- id: displayed_page
+  type: int
+  restore_value: false
+  initial_value: '-1'
 - id: screensaver_enabled
   type: bool
   restore_value: true
