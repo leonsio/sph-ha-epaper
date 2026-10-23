@@ -8,7 +8,8 @@ class EpaperRefresh : public Component {
   void set_display(it8951::IT8951Display *display) { display_ = display; }
   bool idle() const;
   bool cleaning() const { return cleaning_; }
-  void clean();
+  // quick=true: one white INIT refresh; default retains the boot cleanup.
+  void clean(bool quick = false);
   // Local UI updates must not be promoted to whole-panel updates by the
   // driver's count threshold. Hourly UI redraws still provide maintenance.
   void preserve_partial();
@@ -22,7 +23,7 @@ class EpaperRefresh : public Component {
   void standby_();
   it8951::IT8951Display *display_{nullptr};
   display::display_writer_t saved_writer_{};
-  bool cleaning_{false};
+  bool cleaning_{false}, quick_clean_{false};
   uint8_t stage_{0};
 };
 }
