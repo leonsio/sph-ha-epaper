@@ -36,10 +36,13 @@ class SdPngDecoderTest(unittest.TestCase):
 #include <cstring>
 #include <string>
 #include <vector>
+#include <chrono>
 #include <pngle.h>
-template<class T>struct RAMAllocator{T* allocate(size_t n){return (T*)malloc(n);}void deallocate(T*p,size_t){free(p);}};
+template<class T>struct RAMAllocator{enum{ALLOC_INTERNAL=2};RAMAllocator()=default;explicit RAMAllocator(int){} T* allocate(size_t n){return (T*)malloc(n);}void deallocate(T*p,size_t){free(p);}};
+static uint32_t micros(){return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 struct {void feed_wdt(){}} App;
 #define ESP_LOGW(tag,...) fprintf(stderr,__VA_ARGS__)
+#define ESP_LOGI(tag,...) fprintf(stderr,__VA_ARGS__)
 static uint8_t gray4(uint8_t v){return std::min(15,(int(v)+8)>>4);}
 struct SDScreensaver{int width_,height_;bool load_png_(const std::string&,uint8_t*);};
 '''
