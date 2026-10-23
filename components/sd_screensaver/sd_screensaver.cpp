@@ -34,12 +34,52 @@ void SDScreensaver::setup(){
     clock_active_=retained.clock_active;
     if(clock_active_)clock_minute_=retained.clock_minute;
   }else retained={MAGIC,false,false,0,{0}};
+  // A real reboot/power-on gets a three-step panel cleanup before the normal
+  // UI boot automation renders its page. Deep-sleep wakes deliberately skip it.
+  boot_cleanup_active_=cause==ESP_SLEEP_WAKEUP_UNDEFINED;
+  boot_cleanup_stage_=0;
+  if(boot_cleanup_active_)
+    ESP_LOGI(TAG,"Boot-Cleanup vorgemerkt: WEISS -> SCHWARZ -> WEISS (GC16)");
   // Display CS must stay deasserted while the SD card enters SPI mode.
   gpio_set_direction(GPIO_NUM_10,GPIO_MODE_OUTPUT);gpio_set_level(GPIO_NUM_10,1);
   gpio_set_direction(GPIO_NUM_14,GPIO_MODE_OUTPUT);gpio_set_level(GPIO_NUM_14,1);
   gpio_set_direction(GPIO_NUM_39,GPIO_MODE_OUTPUT);gpio_set_level(GPIO_NUM_39,0);
   gpio_set_direction(GPIO_NUM_15,GPIO_MODE_INPUT);gpio_set_pull_mode(GPIO_NUM_15,GPIO_PULLUP_ONLY);
   if(gpio_get_level(GPIO_NUM_15)==0)mount_();
+}
+void SDScreensaver::loop(){
+  if(!boot_cleanup_active_ || !display_idle())return;
+  auto writer=&DisplayAccess::writer_;
+  switch(boot_cleanup_stage_){
+    case 0:
+      // The YAML boot sequence waits 12 s before the first normal render, so
+      // temporarily replace only the display writer while the panel is idle.
+      boot_writer_=display_->*writer;
+      display_->set_writer(display::display_writer_t([](display::Display &it){it.fill(Color::WHITE);}));
+      ESP_LOGI(TAG,"Boot-Cleanup 1/3: WEISS");
+      display_->update_mode(it8951::UPDATE_MODE_GC16);
+      boot_cleanup_stage_=1;
+      return;
+    case 1:
+      display_->set_writer(display::display_writer_t([](display::Display &it){it.fill(Color::BLACK);}));
+      ESP_LOGI(TAG,"Boot-Cleanup 2/3: SCHWARZ");
+      display_->update_mode(it8951::UPDATE_MODE_GC16);
+      boot_cleanup_stage_=2;
+      return;
+    case 2:
+      display_->set_writer(display::display_writer_t([](display::Display &it){it.fill(Color::WHITE);}));
+      ESP_LOGI(TAG,"Boot-Cleanup 3/3: WEISS");
+      display_->update_mode(it8951::UPDATE_MODE_GC16);
+      boot_cleanup_stage_=3;
+      return;
+    default:
+      // Restore the original YAML renderer. The existing delayed boot refresh
+      // then paints the normal page on top of the cleaned white panel.
+      display_->set_writer(display::display_writer_t(boot_writer_));
+      boot_cleanup_active_=false;
+      ESP_LOGI(TAG,"Boot-Cleanup abgeschlossen; normaler Renderer wiederhergestellt");
+      return;
+  }
 }
 bool SDScreensaver::display_idle() const {
   if(!display_ || display_->is_failed())return false;
@@ -184,9 +224,25 @@ bool SDScreensaver::next(){
 }
 bool SDScreensaver::next_clock(uint32_t minute){
   if(!display_idle())return false;
+  const bool first_clock=!active_ || !clock_active_;
   previous_clock_minute_=clock_minute_;
-  active_=true;resume_=false;clock_active_=true;last_change_=millis();last_full_=millis();
-  clock_minute_=minute;filename_.clear();return true;
+  active_=true;resume_=false;clock_active_=true;last_change_=millis();
+  clock_minute_=minute;filename_.clear();
+
+  // The framebuffer retains the complete clock because auto_clear is disabled.
+  // Every five minutes force the dirty rectangle to the complete panel. The
+  // existing YAML clock renderer may still redraw only the changed digit/hand,
+  // but GC16 then transfers and drives every pixel, including static digits.
+  const bool five_minute_clean=minute>0 && (minute%5U)==0U;
+  if(first_clock || five_minute_clean)last_full_=millis();
+  if(five_minute_clean){
+    display_->*(&DisplayAccess::x_low_)=0;
+    display_->*(&DisplayAccess::y_low_)=0;
+    display_->*(&DisplayAccess::x_high_)=display_->*(&DisplayAccess::width_);
+    display_->*(&DisplayAccess::y_high_)=display_->*(&DisplayAccess::height_);
+    ESP_LOGI(TAG,"Uhr: 5-Minuten-Cleanup -> kompletter GC16-Panelrefresh");
+  }
+  return true;
 }
 void SDScreensaver::render(){
   if(!active_||!pixels_)return;
@@ -208,4 +264,3 @@ void SDScreensaver::render(){
   last_full_=millis();
 }
 } // namespace
-
