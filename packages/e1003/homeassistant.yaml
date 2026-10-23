@@ -14,7 +14,10 @@ text_sensor:
     then:
     - lambda: |-
         id(dirty_pages) |= (1U << 11);
-    - script.execute: elisa_refresh
+        // Cache incoming data, but do not even start the debounce script for
+        // hidden pages/screensavers. The 5s poll retries dirty data while busy.
+        if(!id(sd_photos).active() && !id(sd_photos).resume_requested() && id(current_page)==11 &&
+           id(initial_render_done) && !id(refresh_busy))id(elisa_refresh).execute();
 - platform: template
   id: e1003_active_page
   name: E1003 Aktive Seite
@@ -28,8 +31,10 @@ text_sensor:
   internal: true
   on_value:
     then:
-    - lambda: id(dirty_pages) |= 1U;
-    - script.execute: start_refresh
+    - lambda: |-
+        id(dirty_pages) |= 1U;
+        if(!id(sd_photos).active() && !id(sd_photos).resume_requested() && id(current_page)==0 &&
+           id(initial_render_done) && !id(refresh_busy))id(start_refresh).execute();
 - platform: homeassistant
   id: home_rooms_json
   entity_id: ${home_rooms_entity}
@@ -39,7 +44,8 @@ text_sensor:
     then:
     - lambda: |-
         id(dirty_pages) |= 1U;
-        if(id(current_page)==0)id(start_refresh).execute();
+        if(!id(sd_photos).active() && !id(sd_photos).resume_requested() &&
+           id(current_page)==0 && id(initial_render_done) && !id(refresh_busy))id(start_refresh).execute();
         // A service acknowledgement is not a device-state acknowledgement.
         if(!id(home_pending_entity).empty()) {
           auto feedback=esphome::json::parse_json(x);

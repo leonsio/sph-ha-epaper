@@ -468,6 +468,11 @@ höchstens 180 Sekunden altem `timestamp` angezeigt. Bei Programmende, Datenausf
 oder Tageswechsel wird das jeweilige Hinweisfeld wieder gelöscht. Der Screensaver
 prüft alle fünf Sekunden auf geänderte Hinweise; die HA-Vorlage liefert mindestens
 minütlich neue Daten. Mehrere Geräte/Abfuhren bleiben gleichzeitig sichtbar.
+Die periodischen Refreshskripte für Elisa, Start und Maxim werden nur gestartet,
+wenn die jeweilige Seite tatsächlich sichtbar, der Screensaver weder aktiv noch
+zur Wiederaufnahme vorgemerkt und das Display frei ist. Auch neue RMV-Pakete
+starten bei versteckter Elisa-Seite kein `elisa_refresh` mehr. Die Daten bleiben
+im Sensorcache und werden beim nächsten Öffnen der Seite vollständig gezeichnet.
 Der Kopfbereich ist für Hinweise reserviert; Uhr und Zifferblatt liegen darunter.
 
 Der IT8951 bleibt nur bis zum Ende der physischen Wellenform aktiv: Die Komponente

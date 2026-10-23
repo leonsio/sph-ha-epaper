@@ -23,15 +23,27 @@ interval:
   - script.execute: screensaver_tick
 - interval: 5s
   then:
-  - script.execute: elisa_refresh
+  - if:
+      condition:
+        lambda: return !id(sd_photos).active() && !id(sd_photos).resume_requested() && id(current_page)==11 && id(initial_render_done) && !id(refresh_busy);
+      then:
+      - script.execute: elisa_refresh
 - interval: 60s
   then:
-  - script.execute: start_refresh
+  - if:
+      condition:
+        lambda: return !id(sd_photos).active() && !id(sd_photos).resume_requested() && id(current_page)==0 && id(initial_render_done) && !id(refresh_busy);
+      then:
+      - script.execute: start_refresh
 # Poll the wall-clock minute so refresh does not drift relative to HA time.
 # A busy display does not consume the minute key; the next 5s poll retries.
 - interval: 5s
   then:
-  - script.execute: maxim_refresh
+  - if:
+      condition:
+        lambda: return !id(sd_photos).active() && !id(sd_photos).resume_requested() && id(current_page)==2 && id(initial_render_done) && !id(refresh_busy);
+      then:
+      - script.execute: maxim_refresh
 - interval: 60s
   then:
   - if:
