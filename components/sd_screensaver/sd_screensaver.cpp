@@ -9,6 +9,7 @@
 #include "esp_random.h"
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
@@ -76,18 +77,51 @@ bool SDScreensaver::poll_card(){
 void SDScreensaver::scan_(){
   files_.clear();
   // Accept images in the card root as well as the existing optional folder.
-  for(const char *base : {"/sdcard", "/sdcard/screensaver"}){
-  DIR *dir=opendir(base);if(!dir)continue;
-  while(auto *e=readdir(dir)){
-    std::string name=e->d_name;if(name.empty()||name[0]=='.')continue;
-    auto dot=name.find_last_of('.');if(dot==std::string::npos)continue;
-    std::string ext=name.substr(dot);for(auto &c:ext)c=std::tolower(static_cast<unsigned char>(c));
-    if(ext!=".bmp"&&ext!=".gray4")continue;
-    std::string path=std::string(base)+"/"+name;struct stat st;
-    if(path.size()<sizeof(retained.last_file)&&stat(path.c_str(),&st)==0&&S_ISREG(st.st_mode))files_.push_back(path);
+  for(const char *base : {"/sdcard/", "/sdcard/screensaver/"}){
+    DIR *dir=opendir(base);
+    if(!dir){
+      const int error=errno;
+      if(std::strcmp(base,"/sdcard/")==0 || error!=ENOENT)
+        ESP_LOGW(TAG,"Verzeichnis nicht lesbar: %s: errno=%d (%s)",base,error,std::strerror(error));
+      continue;
+    }
+    unsigned entries=0;
+    while(true){
+      errno=0;
+      auto *e=readdir(dir);
+      if(!e){
+        if(errno)ESP_LOGW(TAG,"Verzeichnislesen fehlgeschlagen: %s: errno=%d",base,errno);
+        break;
+      }
+      std::string name=e->d_name;
+      if(name.empty()||name[0]=='.')continue;
+      ++entries;
+      ESP_LOGD(TAG,"SD-Eintrag: %s%s",base,name.c_str());
+      auto dot=name.find_last_of('.');
+      if(dot==std::string::npos)continue;
+      std::string ext=name.substr(dot);
+      for(auto &c:ext)c=std::tolower(static_cast<unsigned char>(c));
+      if(ext!=".bmp"&&ext!=".gray4"){
+        ESP_LOGD(TAG,"Uebersprungen (Format): %s",name.c_str());
+        continue;
+      }
+      std::string path=std::string(base)+name;struct stat st;
+      if(path.size()>=sizeof(retained.last_file)){
+        ESP_LOGW(TAG,"Bildpfad zu lang: %s",path.c_str());
+        continue;
+      }
+      if(stat(path.c_str(),&st)!=0){
+        const int error=errno;
+        ESP_LOGW(TAG,"Datei nicht zugreifbar: %s: errno=%d (%s)",path.c_str(),error,std::strerror(error));
+        continue;
+      }
+      if(S_ISREG(st.st_mode))files_.push_back(path);
+      else ESP_LOGD(TAG,"Keine regulaere Datei: %s (mode=%u)",path.c_str(),unsigned(st.st_mode));
+      if(files_.size()>=1024)break;
+    }
+    closedir(dir);
+    ESP_LOGI(TAG,"SD-Suche: %s: %u Eintraege; insgesamt %u BMP/Gray4-Bilder",base,entries,unsigned(files_.size()));
     if(files_.size()>=1024)break;
-  }closedir(dir);
-  if(files_.size()>=1024)break;
   }
 }
 void SDScreensaver::activity(){
