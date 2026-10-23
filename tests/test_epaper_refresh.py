@@ -222,6 +222,30 @@ int main(){
         self.assertEqual(switches["cleanup_on_page_change"]["restore_mode"], "RESTORE_DEFAULT_OFF")
         self.assertEqual(next(s for s in settings["select"] if s["id"] == "cleanup_interval")["initial_option"], "Aus")
 
+    def test_picture_cleanup_precedes_image_transfer(self):
+        screensaver = yaml.load((ROOT / "packages/e1003/screensaver.yaml").read_text(),
+                                Loader=yaml.BaseLoader)
+        show = next(s for s in screensaver["script"] if s["id"] == "screensaver_show")
+        # Every image enters the cleaning branch; it is not tied to the boot,
+        # hourly interval, or page-change preferences.
+        branch = show["then"][0]["if"]
+        self.assertEqual(branch["condition"]["lambda"],
+                         'return id(screensaver_source).current_option()=="Bild";')
+        cleaning = branch["then"]
+        self.assertIn("id(panel_refresh).clean();", cleaning[0]["lambda"])
+        self.assertEqual(cleaning[1]["wait_until"]["condition"]["lambda"],
+                         "return id(panel_refresh).idle();")
+        self.assertIn("id(full_refresh_due)=true;", cleaning[2]["lambda"])
+        self.assertIn("id(cleanup_boot_pending)=false;", cleaning[2]["lambda"])
+        self.assertEqual(branch["else"], [
+            {"script.execute": "cleanup_if_due"}, {"script.wait": "cleanup_if_due"}])
+        image = show["then"][1]["if"]["then"]
+        self.assertEqual(image[1]["it8951.update"]["mode"], "GC16")
+        # The physical state machine below separately verifies all three
+        # cleaning waveforms, writer restore and standby before idle().
+        self.assertEqual(image[2]["wait_until"]["condition"]["lambda"],
+                         "return id(panel_refresh).idle();")
+
     def test_physical_completion_and_writer_restore(self):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
@@ -247,3 +271,4 @@ int main(){
 
 if __name__ == "__main__":
     unittest.main()
+
