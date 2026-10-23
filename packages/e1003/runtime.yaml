@@ -5,14 +5,9 @@ script:
   - if:
       condition:
         lambda: |-
-          const int target=id(sd_photos).active() ? -2 : id(current_page);
-          const bool boot=id(cleanup_boot_pending) && id(cleanup_on_boot).state;
-          const bool page=!id(cleanup_boot_pending) && id(cleanup_on_page_change).state &&
-              target!=id(displayed_page);
-          const std::string interval=id(cleanup_interval).current_option().c_str();
-          const uint32_t minutes=interval=="Aus" ? 0 : std::stoul(interval);
-          const bool periodic=minutes && (uint32_t)(millis()-id(cleanup_last_ms))>=minutes*60000UL;
-          return boot || page || periodic;
+          const bool boot=id(cleanup_boot_pending) && id(cleanup_on_boot).state &&
+              id(wake_cause_code)==ESP_SLEEP_WAKEUP_UNDEFINED;
+          return boot;
       then:
       - lambda: id(panel_refresh).clean();
       - wait_until:
@@ -24,6 +19,21 @@ script:
           // cache before the caller paints the complete current page again.
           id(force_content)=true;
           id(full_refresh_due)=true;
+          id(screensaver_clock_full)=true;
+  - lambda: |-
+      const int target=id(sd_photos).active() ? -2 : id(current_page);
+      const bool page=!id(cleanup_boot_pending) && id(cleanup_on_page_change).state &&
+          target!=id(displayed_page);
+      const std::string interval=id(cleanup_interval).current_option().c_str();
+      const uint32_t minutes=interval=="Aus" ? 0 : std::stoul(interval);
+      const bool periodic=minutes && (uint32_t)(millis()-id(cleanup_last_ms))>=minutes*60000UL;
+      if(page || periodic){
+        id(force_content)=true;
+        id(full_refresh_due)=true;
+        id(screensaver_clock_full)=true;
+        id(cleanup_last_ms)=millis();
+        ESP_LOGI("ui_refresh","Full Refresh ohne Reinigungszyklus");
+      }
   - lambda: id(cleanup_boot_pending)=false;
 - id: navigation_visibility_store
   mode: single
@@ -226,7 +236,6 @@ script:
 - id: publish_wake_diagnostics
   mode: single
   then:
-  - delay: 250ms
   - if:
       condition:
         lambda: return !id(wake_diag_published) && id(wake_api_ms) > 0 && id(wake_display_ms) > 0;
@@ -432,7 +441,6 @@ script:
           condition:
             lambda: return id(panel_refresh).idle();
       - lambda: id(refresh_busy)=true;
-      - delay: 10ms
       - lambda: |-
           id(last_refresh_ms)=millis();
           if(id(full_refresh_due)) ESP_LOGI("ui_refresh", "Displayupdate: FULL (Boot/Wakeup oder 60min)");

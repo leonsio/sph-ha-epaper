@@ -1,4 +1,8 @@
 globals:
+- id: screensaver_clock_full
+  type: bool
+  restore_value: false
+  initial_value: 'true'
 - id: cleanup_boot_pending
   type: bool
   restore_value: false

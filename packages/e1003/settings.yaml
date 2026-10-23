@@ -1,7 +1,7 @@
 select:
 - platform: template
   id: cleanup_interval
-  name: E1003 Cleanup Intervall
+  name: E1003 Full Refresh Intervall
   entity_category: config
   icon: mdi:monitor-shimmer
   optimistic: true
@@ -96,7 +96,7 @@ switch:
     - lambda: esphome::global_preferences->sync();
 - platform: template
   id: cleanup_on_page_change
-  name: E1003 Cleanup bei Seitenwechsel
+  name: E1003 Full Refresh bei Seitenwechsel
   entity_category: config
   icon: mdi:monitor-shimmer
   optimistic: true

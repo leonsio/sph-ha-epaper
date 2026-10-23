@@ -425,14 +425,28 @@ ist unabhängig vom Neuzeichnen der Oberfläche konfigurierbar:
 
 | Einstellung in Home Assistant | Standard | Verhalten |
 | --- | --- | --- |
-| E1003 Cleanup beim Booten | Ein | Einmal nach Neustart, auch nach Deep-Sleep-Wakeup |
-| E1003 Cleanup bei Seitenwechsel | Aus | Optional beim Wechsel der tatsächlich angezeigten Seite, auch beim Wechsel zum/vom Screensaver |
-| E1003 Cleanup Intervall | Aus | Optional alle 15, 30 oder 60 Minuten; auch im Screensaver |
+| E1003 Cleanup beim Booten | Ein | Mehrstufige Reinigung bei Neustart/Power-On; nicht beim normalen Deep-Sleep-Wakeup |
+| E1003 Full Refresh bei Seitenwechsel | Aus | Vollständiger GC16-Neuaufbau beim Wechsel, ohne Reinigungszyklus oder zusätzliche Wartezeit |
+| E1003 Full Refresh Intervall | Aus | Optional vollständiger GC16-Neuaufbau alle 15, 30 oder 60 Minuten; auch im Screensaver |
 
-Ein erzwungener Neuaufbau, ein Minutenupdate oder ein stündlicher Full-Refresh
-lösen allein keine mehrstufige Reinigung aus. Uhr und Bilderrahmen verwenden
-dieselben Cleanup-Einstellungen. Nach einer Reinigung werden die UI-Caches
+Ein erzwungener Neuaufbau, ein Seitenwechsel, ein Minutenupdate oder ein
+Intervall lösen keine mehrstufige Reinigung aus. Die bisherigen internen IDs
+der Optionen bleiben erhalten; ihre Anzeigenamen wurden angepasst. Nach einer Reinigung werden die UI-Caches
 ungültig gemacht, damit der komplette Inhalt wieder erscheint.
+Die Seitenwechsel-Option wartet nur auf den tatsächlichen Hardwareabschluss.
+Der bisherige zusätzliche 10-ms-Delay im Refresh-Ablauf entfällt.
+
+Die Screensaver-Uhren verwenden nach ihrem ersten vollständigen Aufbau lokale
+GC16-Teilupdates: Analog werden alte Zeigersilhouetten gelöscht und beide Zeiger
+neu gezeichnet; Zifferblatt und Zahlen werden erhalten. Die Zeigerlänge wird an
+den tatsächlichen Textgrenzen der Ziffern begrenzt, damit das Löschen keine Zahlen
+berührt. Digital werden nur geänderte Ziffernzellen gelöscht und neu gezeichnet.
+Datum und Wetter werden nur bei geänderten Anzeigeinhalten aktualisiert.
+Der Treiber fasst die geänderten Pixel weiterhin in einem Dirty-Rechteck zusammen;
+einzelne Pixel können deshalb nicht unabhängig in Standby versetzt werden.
+Nach jeder Übertragung geht der gesamte Controller in Standby.
+Ein Deep-Sleep-Wakeup verliert den RAM-Bildpuffer und erfordert einen vollständigen
+Aufbau der Uhr, aber keinen INIT-Schwarz-Weiß-Reinigungszyklus.
 
 Der IT8951 bleibt nur bis zum Ende der physischen Wellenform aktiv: Die Komponente
 wartet auf `LUTAFSR == 0`, sendet anschließend `TCON_STANDBY` und gibt erst nach
@@ -462,9 +476,9 @@ Statusanzeigen werden beim nächsten Update außerhalb eines Home-Teilupdates
 übernommen. Dadurch ziehen sie das Dirty-Rechteck nicht bis in den Kopfbereich.
 
 Nachbilder beim Wechsel von schwarzen Texten auf graue Flächen sind weiterhin
-eine mögliche Grenze der direkten GC16-Umschaltung. Für höhere Bildqualität
-`E1003 Cleanup bei Seitenwechsel` einschalten; dies gilt auch für Unterseiten
-wie Maxim Übersicht → Stundenplan. Der Standard bleibt auf Wunsch aus.
+eine mögliche Grenze der direkten GC16-Umschaltung. Die Seitenwechsel-Option
+erzwingt jetzt ausschließlich einen GC16-Neuaufbau; die frühere mehrstufige
+Reinigung ist auf Neustarts beschränkt. Der Standard bleibt auf Wunsch aus.
 VCOM (`1400`, Register `2`) und Temperaturvorgabe (`25 °C`) bleiben unverändert.
 Der tatsächliche VCOM-Wert eines individuellen Panels lässt sich nicht aus Fotos
 bestimmen. Das Verblassen unveränderter Bereiche passt zur bislang dauerhaft
@@ -498,5 +512,28 @@ Standby erst nach Wellenformende und erneutes Aktualisieren nach Standby.
 Die Cleanup-Policy wird zusätzlich mit der echten YAML-Lambda auf dem Host geprüft.
 Weitere Tests kompilieren den echten Maxim-Teilrenderer mit Zeichenrekordern
 und prüfen die Trennung der Uhr-/Countdown-Rechtecke sowie die Home-Status-Guards.
+Der vollständige Screensaver-Uhr-Renderer wird ebenfalls auf dem Host kompiliert:
+Analog-Minutenupdates ohne Zifferblatt-Neuaufbau, einzelne Digitalziffern,
+unveränderte/geänderte Fußzeilen, Mitternacht und erzwungener Neuaufbau.
 Diese Änderung wurde ohne ESPHome-Firmware-Build und ohne angeschlossenes Panel
 validiert. Der Test ersetzt keinen Paneltest.
+
+### Auffälligkeiten im Log vom 23.10.2026
+
+- `Screensaver Bilder >> 0` kam durch bedingungsloses Publizieren alle fünf
+  Sekunden. Die Anzahl und der Dateiname werden jetzt nur initial oder bei
+  Änderung veröffentlicht. Null bedeutet keine gefundenen Bilddateien und ist
+  für den Uhrmodus kein Fehler.
+- Der fehlende Codepoint `U+F0AAC` gehört zum Geschirrspüler. Er wurde im tatsächlich
+  verwendeten Font `mdi_start_appliance` ergänzt.
+- Die Wakeup-Diagnose konnte während ihres künstlichen 250-ms-Delays erneut
+  gestartet werden. Der Delay wurde entfernt; die bestehende Einmal-Markierung
+  wird jetzt ohne dazwischenliegende Wartezeit gesetzt.
+- Zeichenoperationen blockierten teilweise 60–455 ms; diese Warnungen sind keine
+  Display-Timeouts. Lokale Uhrupdates reduzieren die Zeichenarbeit, die vollständigen
+  Schul-/Wetterseiten können weiterhin die 50-ms-Warnschwelle überschreiten.
+- Auf einen WLAN-Roamingwechsel folgt ein API-Verbindungsabbruch mit anschließend
+  erfolgreichem Wiederverbinden. Im Ausschnitt stehen keine IT8951-Timeouts oder
+  Treiberfehler; die Standby-Abschlüsse sind sichtbar.
+- Der Hinweis `flash_chip: winbond` ist eine Optimierungsempfehlung. Der konkrete
+  Flash-Chip wurde nicht anhand des Logs umkonfiguriert.

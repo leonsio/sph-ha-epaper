@@ -122,6 +122,7 @@ font:
   id: mdi_start_appliance
   size: 64
   glyphs:
+  - "\U000F0AAC" # dishwasher, used on Start
   - "\U000F01F3"
   - "\U000F04B8"
   - "\U000F0004"

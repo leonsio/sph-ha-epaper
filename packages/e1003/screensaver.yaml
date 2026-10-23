@@ -13,6 +13,7 @@ script:
   - lambda: |-
       const bool was_active=id(sd_photos).active();
       id(sd_photos).stop();
+      id(screensaver_clock_full)=true;
       if(was_active || id(screensaver_redraw)){
         id(screensaver_redraw)=true;
         id(force_content)=true;id(full_refresh_due)=true;
@@ -38,7 +39,9 @@ script:
       - lambda: |-
           id(sd_photos).poll_card();
           id(screensaver_switch).publish_state(id(screensaver_enabled) && (id(screensaver_source).current_option()!="Bild" || id(sd_photos).ready()));
-          id(screensaver_count).publish_state(id(sd_photos).count());
+          const float count=id(sd_photos).count();
+          if(!id(screensaver_count).has_state() || id(screensaver_count).state!=count)
+            id(screensaver_count).publish_state(count);
           if(!id(screensaver_enabled) || !(id(screensaver_source).current_option()!="Bild" || id(sd_photos).ready())){
             if(id(sd_photos).active() || id(sd_photos).resume_requested())id(screensaver_stop).execute();
             return;
@@ -52,8 +55,8 @@ script:
           if(id(sd_photos).due(start,interval) || minute_changed){
             id(refresh_busy)=true;
             if(clock ? id(sd_photos).next_clock(clock_now.is_valid()?clock_now.timestamp/60:0) : id(sd_photos).next()){
-              id(screensaver_filename).publish_state(id(sd_photos).filename());
-              id(screensaver_count).publish_state(id(sd_photos).count());
+              if(!id(screensaver_filename).has_state() || id(screensaver_filename).state!=id(sd_photos).filename())
+                id(screensaver_filename).publish_state(id(sd_photos).filename());
               id(screensaver_show).execute();
             }else{
               // Do not spin/retry every five seconds after a bad image.
@@ -61,14 +64,15 @@ script:
               id(sd_photos).activity();id(refresh_busy)=false;
               id(screensaver_switch).turn_off();
             }
-          }else if(id(sd_photos).hourly_due()){
-            id(refresh_busy)=true;id(screensaver_show).execute();
           }
 - id: screensaver_show
   mode: single
   then:
   - script.execute: cleanup_if_due
   - script.wait: cleanup_if_due
+  - lambda: |-
+      if(id(screensaver_source).current_option()!="Bild" && !id(screensaver_clock_full))
+        id(panel_refresh).preserve_partial();
   - it8951.update:
       id: epaper
       mode: GC16

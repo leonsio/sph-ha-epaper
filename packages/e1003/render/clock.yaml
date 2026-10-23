@@ -8,11 +8,17 @@
   const Color ink=Color::BLACK, paper=Color::WHITE;
   auto now=id(ha_time).now();
   if(!now.is_valid()){
+    id(screensaver_clock_full)=true;
     it.fill(paper);
     it.print(W/2,H/2,id(font_weather_condition),ink,TextAlign::CENTER,"Uhrzeit wird synchronisiert");
     return;
   }
   const bool analog=id(screensaver_source).current_option()=="Analoge Uhr";
+  static bool clock_valid=false, painted_analog=false;
+  static int painted_hour=-1, painted_minute=-1;
+  static int minute_length=0;
+  static std::string painted_date, painted_weather;
+  const bool full=id(screensaver_clock_full) || !clock_valid || painted_analog!=analog;
   static const char *days[]={"", "Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"};
   
   auto weather_text=[&]()->const char *{
@@ -32,14 +38,28 @@
     if(condition=="exceptional")return "Außergewöhnlich";
     return "Wetter nicht verfügbar";
   };
-  auto draw_footer=[&](){
-    it.printf(W/2,H-155,id(font_weather_condition),ink,TextAlign::CENTER,"%s, %02d.%02d.%04d",
-              days[now.day_of_week],now.day_of_month,now.month,now.year);
+  char date_buffer[96];
+  snprintf(date_buffer,sizeof(date_buffer),"%s, %02d.%02d.%04d",
+           days[now.day_of_week],now.day_of_month,now.month,now.year);
+  const std::string date_text=date_buffer;
+  auto weather_line=[&](){
     const std::string raw=id(weather_outdoor_temperature).state;
     char *end=nullptr;float temperature=strtof(raw.c_str(),&end);
+    char buffer[128];
     if(end!=raw.c_str() && std::isfinite(temperature))
-      it.printf(W/2,H-65,id(font_weather_condition),ink,TextAlign::CENTER,"%s · %.1f °C",weather_text(),temperature);
-    else it.printf(W/2,H-65,id(font_weather_condition),ink,TextAlign::CENTER,"%s · -- °C",weather_text());
+      snprintf(buffer,sizeof(buffer),"%s · %.1f °C",weather_text(),temperature);
+    else snprintf(buffer,sizeof(buffer),"%s · -- °C",weather_text());
+    return std::string(buffer);
+  };
+  const std::string weather_text_line=weather_line();
+  auto footer_row=[&](int y,const std::string &value,const std::string &previous){
+    if(!full && value==previous)return;
+    if(!full){
+      int x=0,ty=0,w=0,h=0;
+      it.get_text_bounds(W/2,y,previous.c_str(),id(font_weather_condition),TextAlign::CENTER,&x,&ty,&w,&h);
+      esphome::it8951_native::fill_gray4_rect(id(epaper),x-2,ty-2,w+4,h+4,paper);
+    }
+    it.print(W/2,y,id(font_weather_condition),ink,TextAlign::CENTER,value.c_str());
   };
   auto analog_hand=[&](int hour,int minute,int length,int width,bool minute_hand,Color color){
     const int cx=W/2, cy=(H-190)/2;
@@ -51,38 +71,73 @@
   };
   auto digital_geometry=[&](int centers[5],int &cell_w,int &cell_h,int &cy){
     int bx=0,by=0,bw=0,bh=0;
-    it.get_text_bounds(0,0,"88:88",id(font_screensaver_clock),TextAlign::TOP_LEFT,&bx,&by,&bw,&bh);
-    const int slot=std::max(1,bw/5);
+    it.get_text_bounds(0,0,"8",id(font_screensaver_clock),TextAlign::TOP_LEFT,&bx,&by,&bw,&bh);
+    cell_w=bw+24;cell_h=bh+34;
+    int colon_w=0,colon_h=0;
+    it.get_text_bounds(0,0,":",id(font_screensaver_clock),TextAlign::TOP_LEFT,&bx,&by,&colon_w,&colon_h);
+    const int colon_slot=colon_w+24, left=(W-4*cell_w-colon_slot)/2;
     cy=(H-190)/2;
-    centers[0]=W/2-2*slot;centers[1]=W/2-slot;centers[2]=W/2;
-    centers[3]=W/2+slot;centers[4]=W/2+2*slot;
-    cell_w=slot+24;cell_h=bh+34;
+    centers[0]=left+cell_w/2;centers[1]=left+cell_w*3/2;
+    centers[2]=W/2;
+    centers[3]=left+2*cell_w+colon_slot+cell_w/2;
+    centers[4]=left+3*cell_w+colon_slot+cell_w/2;
   };
   
   {
-    it.fill(paper);
+    if(full)it.fill(paper);
     if(analog){
       const int cx=W/2, cy=(H-190)/2, r=std::min(W/2-30,cy-20);
-      it.circle(cx,cy,r,ink);
-      for(int m=0;m<60;m++){
+      if(full){
+        minute_length=int(r*0.79);
+        it.circle(cx,cy,r,ink);
+        for(int m=0;m<60;m++){
         const double a=m*3.141592653589793/30.0-3.141592653589793/2;
         const int inner=r-(m%5==0?42:17);
         for(int offset=-1;offset<=1;offset++)
           it.line(cx+int(inner*cos(a))+offset,cy+int(inner*sin(a)),cx+int((r-8)*cos(a))+offset,cy+int((r-8)*sin(a)),ink);
-        if(m%5==0)it.printf(cx+int((r-85)*cos(a)),cy+int((r-85)*sin(a)),id(font_start_weather),ink,TextAlign::CENTER,"%d",m==0?12:m/5);
+        if(m%5==0){
+          const int tx=cx+int((r-85)*cos(a)),ty=cy+int((r-85)*sin(a));
+          char label[4];snprintf(label,sizeof(label),"%d",m==0?12:m/5);
+          it.print(tx,ty,id(font_start_weather),ink,TextAlign::CENTER,label);
+          int x=0,y=0,w=0,h=0;
+          it.get_text_bounds(tx,ty,label,id(font_start_weather),TextAlign::CENTER,&x,&y,&w,&h);
+          const int dx=std::max(0,std::max(x-cx,cx-(x+w)));
+          const int dy=std::max(0,std::max(y-cy,cy-(y+h)));
+          minute_length=std::min(minute_length,std::max(0,int(std::sqrt(double(dx*dx+dy*dy)))-16));
+        }
+        }
       }
-      analog_hand(now.hour,now.minute,int(r*0.55),18,false,ink);
-      analog_hand(now.hour,now.minute,int(r*0.79),11,true,ink);
-      it.filled_circle(cx,cy,24,ink);
+      if(full || now.hour!=painted_hour || now.minute!=painted_minute){
+        // Hands stop inside the number ring. Erasing their old silhouettes
+        // cannot erase dial numbers/ticks; redraw both hands for intersections.
+        if(!full){
+          analog_hand(painted_hour,painted_minute,int(r*0.55),18,false,paper);
+          analog_hand(painted_hour,painted_minute,minute_length,11,true,paper);
+        }
+        analog_hand(now.hour,now.minute,int(r*0.55),18,false,ink);
+        analog_hand(now.hour,now.minute,minute_length,11,true,ink);
+        it.filled_circle(cx,cy,24,ink);
+      }
     }else{
       int centers[5],cell_w=0,cell_h=0,cy=0;
       digital_geometry(centers,cell_w,cell_h,cy);
-      char digits[5];snprintf(digits,sizeof(digits),"%02d%02d",now.hour,now.minute);
+      char digits[32];snprintf(digits,sizeof(digits),"%02d%02d",now.hour,now.minute);
       const int slots[4]={0,1,3,4};
-      for(int i=0;i<4;i++)it.printf(centers[slots[i]],cy,id(font_screensaver_clock),ink,TextAlign::CENTER,"%c",digits[i]);
-      it.print(centers[2],cy,id(font_screensaver_clock),ink,TextAlign::CENTER,":");
+      char previous[32];snprintf(previous,sizeof(previous),"%02d%02d",painted_hour<0?0:painted_hour,painted_minute<0?0:painted_minute);
+      for(int i=0;i<4;i++){
+        if(!full && digits[i]==previous[i])continue;
+        if(!full)esphome::it8951_native::fill_gray4_rect(id(epaper),centers[slots[i]]-cell_w/2,cy-cell_h/2,cell_w,cell_h,paper);
+        it.printf(centers[slots[i]],cy,id(font_screensaver_clock),ink,TextAlign::CENTER,"%c",digits[i]);
+      }
+      if(full)it.print(centers[2],cy,id(font_screensaver_clock),ink,TextAlign::CENTER,":");
     }
-    draw_footer();
+    footer_row(H-155,date_text,painted_date);
+    footer_row(H-65,weather_text_line,painted_weather);
+    painted_date=date_text;painted_weather=weather_text_line;
+    painted_hour=now.hour;painted_minute=now.minute;
+    painted_analog=analog;clock_valid=true;
+    id(screensaver_clock_full)=false;
+    ESP_LOGI("screensaver_clock","%s: %s",analog?"Analog":"Digital",full?"FULL":"PARTIAL");
     return;
   }
   }

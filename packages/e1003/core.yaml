@@ -23,8 +23,8 @@ esphome:
     then:
     - lambda: |-
         id(wake_boot_start_ms) = millis();
-        // Each deep-sleep wake boots ESPHome anew. The first render is a full
-        // panel GC16 cleanup, regardless of how recently the last one occurred.
+        // Each deep-sleep wake boots ESPHome anew and loses the RAM framebuffer.
+        // Redraw fully; multi-stage cleanup is reserved for restart/power-on.
         id(full_refresh_due) = true;
         e1003_rtc_boot_count++;
         id(wake_boot_count) = e1003_rtc_boot_count;

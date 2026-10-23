@@ -159,42 +159,57 @@ class RefreshTest(unittest.TestCase):
         policy = next(s for s in runtime["script"] if s["id"] == "cleanup_if_due")
         expression = policy["then"][0]["if"]["condition"]["lambda"]
         expression = re.sub(r"id\((\w+)\)", r"\1", expression)
+        maintenance = re.sub(r"id\((\w+)\)", r"\1", policy["then"][1]["lambda"])
         harness = r'''
 #include <cassert>
 #include <cstdint>
 #include <string>
+#define ESP_LOGI(...) ((void)0)
+constexpr int ESP_SLEEP_WAKEUP_UNDEFINED=0;
+int wake_cause_code=0;
 struct { bool value=false; bool active()const{return value;} } sd_photos;
 struct Switch { bool state; } cleanup_on_boot{true}, cleanup_on_page_change{false};
 struct { std::string value="Aus"; std::string current_option()const{return value;} } cleanup_interval;
 bool cleanup_boot_pending=true;
+bool force_content=false, full_refresh_due=false, screensaver_clock_full=false;
 int current_page=0, displayed_page=-1;
 uint32_t tick=1000, cleanup_last_ms=0;
 uint32_t millis(){return tick;}
 bool due(){
 POLICY
 }
+void maintain(){
+MAINTENANCE
+}
+void reset_flags(){force_content=full_refresh_due=screensaver_clock_full=false;}
 int main(){
   assert(due()); // default boot
   cleanup_on_boot.state=false; assert(!due());
+  cleanup_on_boot.state=true; wake_cause_code=3; assert(!due()); // timer wake
+  wake_cause_code=0;
   cleanup_boot_pending=false; cleanup_on_boot.state=true;
   displayed_page=0; assert(!due());
   current_page=2; assert(!due()); // default navigation: no cleanup
-  cleanup_on_page_change.state=true; assert(due());
+  cleanup_on_page_change.state=true; assert(!due()); maintain();
+  assert(force_content && full_refresh_due && screensaver_clock_full); reset_flags();
   displayed_page=2; assert(!due()); // minute/forced redraw: no cleanup
-  sd_photos.value=true; assert(due()); // enter screensaver
+  sd_photos.value=true; assert(!due()); maintain(); assert(full_refresh_due); reset_flags();
   displayed_page=-2; assert(!due()); // next clock tick/image
-  sd_photos.value=false; assert(due()); // leave screensaver
+  maintain(); assert(!full_refresh_due);
+  sd_photos.value=false; assert(!due()); maintain(); assert(full_refresh_due); reset_flags();
   cleanup_on_page_change.state=false;
   cleanup_interval.value="15 Minuten";
-  tick=899999; assert(!due()); tick=900000; assert(due());
+  cleanup_last_ms=0;
+  tick=899999; maintain(); assert(!full_refresh_due);
+  tick=900000; assert(!due()); maintain(); assert(full_refresh_due); reset_flags();
   cleanup_last_ms=tick; assert(!due());
-  tick+=900000; assert(due());
-  cleanup_interval.value="Aus"; assert(!due());
+  tick+=900000; maintain(); assert(full_refresh_due); reset_flags();
+  cleanup_interval.value="Aus"; maintain(); assert(!full_refresh_due);
   cleanup_interval.value="15 Minuten";
   cleanup_last_ms=0xFFFF0000U; tick=cleanup_last_ms+900000U;
-  assert(due()); // uint32 rollover
+  assert(!due()); maintain(); assert(full_refresh_due); // uint32 rollover
 }
-'''.replace("POLICY", expression)
+'''.replace("POLICY", expression).replace("MAINTENANCE", maintenance)
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             (work / "policy.cpp").write_text(harness)

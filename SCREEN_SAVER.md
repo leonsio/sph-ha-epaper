@@ -93,11 +93,16 @@ Es gibt keine zusätzliche Dithering- oder Glättungsstufe.
 
 Bildwechsel und minütliche Uhr-Updates verwenden GC16. Eine mehrstufige Reinigung
 **INIT weiß → GC16 schwarz → GC16 weiß → GC16 Inhalt** erfolgt standardmäßig nur
-beim Booten (einschließlich Deep-Sleep-Wakeup). In Home Assistant sind zusätzlich
-`E1003 Cleanup bei Seitenwechsel` und `E1003 Cleanup Intervall` (Aus/15/30/60 Minuten)
-wählbar. Beide sind standardmäßig aus und gelten auch für den Screensaver.
+bei Neustart/Power-On. Normales Aufwachen aus Deep Sleep zeichnet den verlorenen
+Bildpuffer vollständig neu, führt aber keine mehrstufige Reinigung aus.
+`E1003 Full Refresh bei Seitenwechsel` und `E1003 Full Refresh Intervall`
+(Aus/15/30/60 Minuten) lösen ausschließlich einen GC16-Neuaufbau aus.
+Beide sind standardmäßig aus und gelten auch für den Screensaver.
 
-Die Uhr wird vollständig neu gezeichnet, einschließlich Datum und Wetter.
+Nach dem ersten Aufbau werden analog nur die alten/neuen Zeiger und digital
+nur die geänderten Ziffern neu gezeichnet. Datum und Wetter bleiben erhalten,
+bis sich der angezeigte Inhalt ändert. Der automatische Updatezähler erzwingt
+bei diesen Minutenupdates keinen Full-Refresh.
 `epaper_refresh` wartet nach jeder Übertragung auf `LUTAFSR == 0` und schaltet den
 Controller anschließend in Standby. So bleibt die Panelansteuerung zwischen Updates
 nicht aktiv. Vor dem nächsten Transfer weckt der native Treiber den Controller.
