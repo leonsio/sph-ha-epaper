@@ -25,12 +25,14 @@ class DisplayAccess : public it8951::IT8951Display {
   using IT8951Display::width_;
   using IT8951Display::height_;
   using IT8951Display::invert_colors_;
+  using display::Display::writer_;
 };
 class SDScreensaver : public Component {
  public:
   void set_display(it8951::IT8951Display *p) { display_=p; }
   float get_setup_priority() const override { return 500.0f; } // after SPI, before display
   void setup() override;
+  void loop() override;
   void on_safe_shutdown() override;
   bool display_idle() const;
   bool poll_card();
@@ -70,6 +72,8 @@ class SDScreensaver : public Component {
   bool mounted_{false}, active_{false}, resume_{false}, clock_active_{false};
   uint32_t last_activity_{0}, last_change_{0}, last_full_{0};
   int width_{0}, height_{0};
+  display::display_writer_t boot_writer_{};
+  bool boot_cleanup_active_{false};
+  uint8_t boot_cleanup_stage_{0};
 };
 } // namespace
-
