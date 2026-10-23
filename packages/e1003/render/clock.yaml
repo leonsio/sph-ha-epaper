@@ -5,8 +5,12 @@
     return;
   }
   const int W=it.get_width(), H=it.get_height();
+  auto &plan=screensaver_ui::plan;
+  const int part=id(screensaver_clock_part);
+  const int CLOCK_TOP=240;
   const Color ink=Color::BLACK, paper=Color::WHITE;
   auto now=id(ha_time).now();
+  if(plan.epoch>0)now=esphome::ESPTime::from_epoch_local(plan.epoch);
   if(!now.is_valid()){
     id(screensaver_clock_full)=true;
     it.fill(paper);
@@ -22,7 +26,7 @@
   static const char *days[]={"", "Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"};
   
   auto weather_text=[&]()->const char *{
-    const std::string condition=id(epaper_weather_condition).state;
+    const std::string condition=plan.condition;
     if(condition=="sunny")return "Sonnig";
     if(condition=="clear-night")return "Klare Nacht";
     if(condition=="partlycloudy")return "Teilweise bewölkt";
@@ -43,7 +47,7 @@
            days[now.day_of_week],now.day_of_month,now.month,now.year);
   const std::string date_text=date_buffer;
   auto weather_line=[&](){
-    const std::string raw=id(weather_outdoor_temperature).state;
+    const std::string raw=plan.temperature;
     char *end=nullptr;float temperature=strtof(raw.c_str(),&end);
     char buffer[128];
     if(end!=raw.c_str() && std::isfinite(temperature))
@@ -53,7 +57,6 @@
   };
   const std::string weather_text_line=weather_line();
   auto footer_row=[&](int y,const std::string &value,const std::string &previous){
-    if(!full && value==previous)return;
     if(!full){
       int x=0,ty=0,w=0,h=0;
       it.get_text_bounds(W/2,y,previous.c_str(),id(font_weather_condition),TextAlign::CENTER,&x,&ty,&w,&h);
@@ -62,7 +65,7 @@
     it.print(W/2,y,id(font_weather_condition),ink,TextAlign::CENTER,value.c_str());
   };
   auto analog_hand=[&](int hour,int minute,int length,int width,bool minute_hand,Color color){
-    const int cx=W/2, cy=(H-190)/2;
+    const int cx=W/2, cy=(H-190+CLOCK_TOP)/2;
     const double tick=minute_hand ? double(minute) : (hour%12)*5+minute/12.0;
     const double a=tick*3.141592653589793/30.0-3.141592653589793/2;
     const int ex=cx+int(length*cos(a)),ey=cy+int(length*sin(a));
@@ -76,7 +79,7 @@
     int colon_w=0,colon_h=0;
     it.get_text_bounds(0,0,":",id(font_screensaver_clock),TextAlign::TOP_LEFT,&bx,&by,&colon_w,&colon_h);
     const int colon_slot=colon_w+24, left=(W-4*cell_w-colon_slot)/2;
-    cy=(H-190)/2;
+    cy=(H-190+CLOCK_TOP)/2;
     centers[0]=left+cell_w/2;centers[1]=left+cell_w*3/2;
     centers[2]=W/2;
     centers[3]=left+2*cell_w+colon_slot+cell_w/2;
@@ -85,8 +88,8 @@
   
   {
     if(full)it.fill(paper);
-    if(analog){
-      const int cx=W/2, cy=(H-190)/2, r=std::min(W/2-30,cy-20);
+    if(analog && (full || part==5)){
+      const int cx=W/2, cy=(H-190+CLOCK_TOP)/2, r=std::min(W/2-30,cy-CLOCK_TOP-20);
       if(full){
         minute_length=int(r*0.79);
         it.circle(cx,cy,r,ink);
@@ -118,26 +121,46 @@
         analog_hand(now.hour,now.minute,minute_length,11,true,ink);
         it.filled_circle(cx,cy,24,ink);
       }
-    }else{
+      painted_hour=now.hour;painted_minute=now.minute;
+    }else if(!analog && (full || (part>=1 && part<=4))){
       int centers[5],cell_w=0,cell_h=0,cy=0;
       digital_geometry(centers,cell_w,cell_h,cy);
       char digits[32];snprintf(digits,sizeof(digits),"%02d%02d",now.hour,now.minute);
       const int slots[4]={0,1,3,4};
-      char previous[32];snprintf(previous,sizeof(previous),"%02d%02d",painted_hour<0?0:painted_hour,painted_minute<0?0:painted_minute);
       for(int i=0;i<4;i++){
-        if(!full && digits[i]==previous[i])continue;
+        if(!full && part!=i+1)continue;
         if(!full)esphome::it8951_native::fill_gray4_rect(id(epaper),centers[slots[i]]-cell_w/2,cy-cell_h/2,cell_w,cell_h,paper);
         it.printf(centers[slots[i]],cy,id(font_screensaver_clock),ink,TextAlign::CENTER,"%c",digits[i]);
       }
       if(full)it.print(centers[2],cy,id(font_screensaver_clock),ink,TextAlign::CENTER,":");
     }
-    footer_row(H-155,date_text,painted_date);
-    footer_row(H-65,weather_text_line,painted_weather);
-    painted_date=date_text;painted_weather=weather_text_line;
-    painted_hour=now.hour;painted_minute=now.minute;
+    if(full || part==6){footer_row(H-155,date_text,painted_date);painted_date=date_text;}
+    if(full || part==7){footer_row(H-65,weather_text_line,painted_weather);painted_weather=weather_text_line;}
+    auto hints=[&](int x,const char *title,const std::vector<std::string> &rows){
+      const int width=(W-72)/2, height=CLOCK_TOP-40;
+      if(!full)esphome::it8951_native::fill_gray4_rect(id(epaper),x,20,width,height,paper);
+      if(rows.empty())return;
+      it.print(x,22,id(font_small),ink,TextAlign::TOP_LEFT,title);
+      // Use two columns for many simultaneous bins; no fixed first-item limit.
+      const int columns=std::max(1,int((rows.size()+4)/5)),column_w=width/columns;
+      for(size_t i=0;i<rows.size();++i){
+        std::string label=rows[i];
+        int bx=0,by=0,bw=0,bh=0;
+        while(!label.empty()){
+          it.get_text_bounds(0,0,label.c_str(),id(ui_small),TextAlign::TOP_LEFT,&bx,&by,&bw,&bh);
+          if(bw<=column_w-12)break;
+          size_t p=label.size()-1;
+          while(p>0 && (static_cast<unsigned char>(label[p])&0xC0)==0x80)--p;
+          label.resize(p);
+        }
+        it.print(x+int(i/5)*column_w,64+int(i%5)*30,id(ui_small),ink,TextAlign::TOP_LEFT,label.c_str());
+      }
+    };
+    if(full || part==8)hints(24,"Morgen Müllabfuhr",plan.waste);
+    if(full || part==9)hints(W/2+12,"Geräte in Betrieb",plan.devices);
     painted_analog=analog;clock_valid=true;
     id(screensaver_clock_full)=false;
-    ESP_LOGI("screensaver_clock","%s: %s",analog?"Analog":"Digital",full?"FULL":"PARTIAL");
+    ESP_LOGI("screensaver_clock","%s: %s Bereich %d",analog?"Analog":"Digital",full?"FULL":"PARTIAL",part);
     return;
   }
   }

@@ -1,4 +1,8 @@
 globals:
+- id: screensaver_clock_part
+  type: int
+  restore_value: false
+  initial_value: '0'
 - id: screensaver_clock_full
   type: bool
   restore_value: false

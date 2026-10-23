@@ -15,6 +15,7 @@ HARNESS = r'''
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include "screensaver_ui.h"
 #define ESP_LOGI(...) ((void)0)
 struct Color {int value; static const Color BLACK,WHITE;};
 const Color Color::BLACK{0},Color::WHITE{15};
@@ -23,20 +24,30 @@ struct Time {
   int hour=10,minute=21,day_of_week=6,day_of_month=23,month=10,year=2026;
   bool valid=true;
   bool is_valid() const {return valid;}
+  static Time from_epoch_local(int64_t);
 };
 struct {Time value; Time now()const{return value;}} ha_time;
+Time Time::from_epoch_local(int64_t){return ha_time.value;}
+namespace esphome {using ESPTime=Time;}
 struct {bool active()const{return true;} void render(){}} sd_photos;
 struct {std::string mode="Analoge Uhr"; std::string current_option()const{return mode;}} screensaver_source;
 struct {std::string state="cloudy";} epaper_weather_condition;
 struct {std::string state="14.0";} weather_outdoor_temperature;
 bool screensaver_clock_full=true;
-int font_screensaver_clock=1,font_weather_condition=2,font_start_weather=3;
+int screensaver_clock_part=0;
+int font_screensaver_clock=1,font_weather_condition=2,font_start_weather=3,font_small=4,ui_small=5;
 struct Display {
+  int xlow=1872,ylow=1404,xhigh=0,yhigh=0;
   int fills=0,circles=0,lines=0,hubs=0,triangles=0,prints=0,digits=0,clears=0;
   int get_width()const{return 1872;} int get_height()const{return 1404;}
-  void fill(Color){++fills;}
-  void print(int,int,int,Color,TextAlign,const char*){++prints;}
-  template<class... Args> void printf(int,int,int,Color,TextAlign,const char*,Args...){++digits;}
+  void rect(int x,int y,int w,int h){xlow=std::min(xlow,x);ylow=std::min(ylow,y);xhigh=std::max(xhigh,x+w);yhigh=std::max(yhigh,y+h);}
+  void fill(Color){++fills;rect(0,0,1872,1404);}
+  void print(int x,int y,int font,Color,TextAlign align,const char* text){
+    ++prints;int bx,by,w,h;get_text_bounds(x,y,text,font,align,&bx,&by,&w,&h);rect(bx,by,w,h);
+  }
+  template<class... Args> void printf(int x,int y,int font,Color c,TextAlign align,const char* fmt,Args...args){
+    char out[256];snprintf(out,sizeof(out),fmt,args...);print(x,y,font,c,align,out);--prints;++digits;
+  }
   void circle(int,int,int,Color){++circles;}
   void line(int,int,int,int,Color){++lines;}
   void filled_circle(int,int,int,Color){++hubs;}
@@ -48,31 +59,39 @@ struct Display {
     *bx=x-(align==TextAlign::CENTER?*w/2:0);
     *by=y-(align==TextAlign::CENTER?*h/2:0);
   }
-  void reset(){fills=circles=lines=hubs=triangles=prints=digits=clears=0;}
+  void reset(){fills=circles=lines=hubs=triangles=prints=digits=clears=0;xlow=1872;ylow=1404;xhigh=yhigh=0;}
 } it;
 Display *epaper=&it;
 namespace esphome::it8951_native {
-void fill_gray4_rect(Display *d,int,int,int,int,Color){++d->clears;}
+void fill_gray4_rect(Display *d,int x,int y,int w,int h,Color){++d->clears;d->rect(x,y,w,h);}
 }
 void render(){
 RENDERER
 }
 int main(){
+  auto &p=screensaver_ui::plan;p.condition="cloudy";p.temperature="14.0";
   render(); assert(it.fills==1 && it.circles==1 && it.lines==180);
-  it.reset(); ++ha_time.value.minute; render();
+  it.reset(); ++ha_time.value.minute; screensaver_clock_part=5;render();
   assert(!screensaver_clock_full);
   assert(it.fills==0 && it.circles==0 && it.lines==0 && it.prints==0);
   assert(it.triangles==4 && it.hubs==1); // old hand silhouettes + new hands
   it.reset(); render(); assert(it.triangles==0 && it.prints==0 && it.fills==0);
-  weather_outdoor_temperature.state="15.0";
+  screensaver_clock_part=7;p.temperature="15.0";
   render(); assert(it.prints==1 && it.clears==1 && it.triangles==0);
   screensaver_source.mode="Digitale Uhr"; screensaver_clock_full=true;
-  it.reset(); render(); assert(it.fills==1 && it.digits==4);
-  it.reset(); ++ha_time.value.minute; render();
+  it.reset();screensaver_clock_part=0; render(); assert(it.fills==1 && it.digits==4);
+  it.reset(); ++ha_time.value.minute; screensaver_clock_part=4;render();
   assert(it.fills==0 && it.digits==1 && it.clears==1 && it.prints==0);
-  ha_time.value.hour=23;ha_time.value.minute=59; render();
+  assert(it.xhigh-it.xlow<=324 && it.ylow>240 && it.yhigh<1200);
+  // Footer and hints are separate transmissions, never joined to this digit.
+  p.waste={"Bioabfall","Papiertonne"};it.reset();screensaver_clock_part=8;render();
+  assert(it.digits==0 && it.prints==3 && it.xhigh<936 && it.yhigh<=220);
+  p.devices={"Waschmaschine · Läuft","Trockner · Läuft","Geschirrspüler · Läuft"};
+  it.reset();screensaver_clock_part=9;render();assert(it.prints==4 && it.xlow>=948 && it.yhigh<=220);
+  p.devices.clear();it.reset();render();assert(it.prints==0 && it.clears==1); // hide stopped/stale
+  screensaver_clock_full=true;ha_time.value.hour=23;ha_time.value.minute=59; render();
   it.reset();ha_time.value.hour=0;ha_time.value.minute=0;++ha_time.value.day_of_month;
-  render();assert(it.fills==0 && it.digits==4 && it.prints==1); // midnight/date
+  screensaver_clock_part=6;render();assert(it.fills==0 && it.digits==0 && it.prints==1);
   it.reset();screensaver_clock_full=true;render();assert(it.fills==1); // explicit full
   it.reset();ha_time.value.valid=false;render();assert(it.fills==1);
   it.reset();ha_time.value.valid=true;render();assert(it.fills==1); // sync message replaced
@@ -88,7 +107,7 @@ class ScreensaverClockTest(unittest.TestCase):
             work = Path(directory)
             (work / "clock.cpp").write_text(HARNESS.replace("RENDERER", source))
             subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
-                            str(work / "clock.cpp"), "-o", str(work / "clock")], check=True)
+                            "-I",str(ROOT),str(work / "clock.cpp"), "-o", str(work / "clock")], check=True)
             subprocess.run([str(work / "clock")], check=True)
 
 

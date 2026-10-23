@@ -103,6 +103,20 @@ Nach dem ersten Aufbau werden analog nur die alten/neuen Zeiger und digital
 nur die geänderten Ziffern neu gezeichnet. Datum und Wetter bleiben erhalten,
 bis sich der angezeigte Inhalt ändert. Der automatische Updatezähler erzwingt
 bei diesen Minutenupdates keinen Full-Refresh.
+Jede geänderte Digitalziffer und jede Fußzeile erhält jetzt eine eigene
+Übertragung; entfernte Felder werden nicht zu einem gemeinsamen großen
+Refresh-Rechteck verbunden. Analog werden die alten/neuen Zeiger zusammen
+aktualisiert, ohne das Zifferblatt neu zu zeichnen.
+
+Beide Uhrmodi zeigen oben links ausschließlich morgige Müllabfuhren und rechts
+laufende Waschmaschine, Trockner und Geschirrspüler. Mehrere Einträge sind möglich.
+Ohne relevante Daten bleiben die Felder leer. Fertige/pausierte/ausgeschaltete
+Geräte und HA-Pakete ohne gültigen, maximal drei Minuten alten Zeitstempel
+werden nicht angezeigt; bereits gezeichnete Hinweise werden dann entfernt.
+Die Angaben kommen aus `sensor.epaper_start_dashboard` (Substitution
+`start_dashboard_entity`). Das mitgelieferte HA-Paket ebenfalls aktualisieren
+und Template-Entitäten neu laden; es liefert zusätzlich `raw_state`.
+
 `epaper_refresh` wartet nach jeder Übertragung auf `LUTAFSR == 0` und schaltet den
 Controller anschließend in Standby. So bleibt die Panelansteuerung zwischen Updates
 nicht aktiv. Vor dem nächsten Transfer weckt der native Treiber den Controller.

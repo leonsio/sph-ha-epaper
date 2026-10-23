@@ -1,4 +1,47 @@
 script:
+- id: screensaver_prepare_clock
+  mode: single
+  then:
+  - lambda: |-
+      auto &plan=screensaver_ui::plan;
+      auto now=id(ha_time).now();
+      if(!now.is_valid()){plan.epoch=0;id(screensaver_clock_full)=true;plan.pending=1;return;}
+      plan.epoch=now.timestamp;
+      const bool analog=id(screensaver_source).current_option()=="Analoge Uhr";
+      char digits[16];snprintf(digits,sizeof(digits),"%02d%02d",now.hour,now.minute);
+      for(int i=0;i<4;i++)plan.desired[i]=analog?"":std::string(1,digits[i]);
+      plan.desired[4]=analog?std::to_string(now.hour)+":"+std::to_string(now.minute):"";
+      plan.desired[5]=now.strftime("%Y-%m-%d");
+      plan.condition=id(epaper_weather_condition).state;
+      plan.temperature=id(weather_outdoor_temperature).state;
+      plan.desired[6]=plan.condition+"|"+plan.temperature;
+      plan.waste.clear();plan.devices.clear();
+      auto doc=esphome::json::parse_json(id(start_dashboard_json).state);
+      const int64_t stamp=doc["timestamp"].as<int64_t>();
+      if(!doc.isNull() && !doc.overflowed() && doc["version"].as<int>()==1 && screensaver_ui::fresh(now.timestamp,stamp)){
+        const auto tomorrow=screensaver_ui::tomorrow(now.year,now.month,now.day_of_month);
+        auto source_time=esphome::ESPTime::from_epoch_local(stamp);
+        const bool same_day=source_time.strftime("%Y-%m-%d")==now.strftime("%Y-%m-%d");
+        for(JsonObject bin:doc["waste"].as<JsonArray>()){
+          const std::string date=bin["date"]|"",name=bin["name"]|"";
+          const bool due=screensaver_ui::pickup_due(date,bin["days"]|-1,tomorrow,same_day);
+          if(due && !name.empty())plan.waste.push_back(name);
+        }
+        for(JsonObject device:doc["laundry"].as<JsonArray>()){
+          const std::string name=device["name"]|"",label=device["state"]|"";
+          const std::string state=device["raw_state"]|label;
+          if(!screensaver_ui::appliance(name) || !screensaver_ui::running(state))continue;
+          const std::string eta=device["eta"]|"";
+          plan.devices.push_back(name+" · "+label+(eta.empty()?"":" · Ende "+eta));
+        }
+      }
+      for(auto *rows:{&plan.waste,&plan.devices}){
+        std::sort(rows->begin(),rows->end());
+        rows->erase(std::unique(rows->begin(),rows->end()),rows->end());
+      }
+      plan.desired[7]=screensaver_ui::signature(plan.waste);
+      plan.desired[8]=screensaver_ui::signature(plan.devices);
+      plan.prepare(id(screensaver_clock_full));
 - id: screensaver_activity
   mode: single
   then:
@@ -52,7 +95,12 @@ script:
           const uint32_t interval=clock?1:std::stoul(std::string(id(screensaver_interval).current_option().c_str()));
           const bool minute_changed=clock && id(sd_photos).active() && clock_now.is_valid() &&
               id(sd_photos).clock_minute()!=clock_now.timestamp/60;
-          if(id(sd_photos).due(start,interval) || minute_changed){
+          if(clock && (id(sd_photos).active() || id(sd_photos).due(start,interval))){
+            id(screensaver_prepare_clock).execute();
+            if(!screensaver_ui::plan.pending && !id(screensaver_clock_full))return;
+          }
+          const bool hints_changed=clock && id(sd_photos).active() && screensaver_ui::plan.pending;
+          if(id(sd_photos).due(start,interval) || minute_changed || hints_changed){
             id(refresh_busy)=true;
             if(clock ? id(sd_photos).next_clock(clock_now.is_valid()?clock_now.timestamp/60:0) : id(sd_photos).next()){
               if(!id(screensaver_filename).has_state() || id(screensaver_filename).state!=id(sd_photos).filename())
@@ -70,16 +118,40 @@ script:
   then:
   - script.execute: cleanup_if_due
   - script.wait: cleanup_if_due
-  - lambda: |-
-      if(id(screensaver_source).current_option()!="Bild" && !id(screensaver_clock_full))
-        id(panel_refresh).preserve_partial();
-  - it8951.update:
-      id: epaper
-      mode: GC16
-  - wait_until:
+  - if:
       condition:
-        lambda: return id(panel_refresh).idle();
+        lambda: return id(screensaver_source).current_option()=="Bild" || id(screensaver_clock_full);
+      then:
+      - lambda: |-
+          id(screensaver_clock_part)=0;
+          if(id(screensaver_source).current_option()!="Bild")id(screensaver_prepare_clock).execute();
+      - it8951.update:
+          id: epaper
+          mode: GC16
+      - wait_until:
+          condition:
+            lambda: return id(panel_refresh).idle();
+      - lambda: screensaver_ui::plan.commit_all();
+      else:
+      - repeat:
+          count: 9
+          then:
+          - if:
+              condition:
+                lambda: return screensaver_ui::plan.has(iteration+1);
+              then:
+              - lambda: |-
+                  id(screensaver_clock_part)=iteration+1;
+                  id(panel_refresh).preserve_partial();
+              - it8951.update:
+                  id: epaper
+                  mode: GC16
+              - wait_until:
+                  condition:
+                    lambda: return id(panel_refresh).idle();
+              - lambda: screensaver_ui::plan.commit(iteration+1);
   - lambda: |-
+      id(screensaver_clock_part)=0;
       id(refresh_busy)=false;
       id(initial_render_done)=true;
       id(displayed_page)=-2;

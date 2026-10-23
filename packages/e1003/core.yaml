@@ -14,6 +14,7 @@ esphome:
   name: maxim-epaper-e1003
   friendly_name: Maxim ePaper E1003
   includes:
+    - screensaver_ui.h
     - it8951_native_gray4.h
     - epaper_home_ui.h
     - esp32_sleep_helpers.h

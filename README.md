@@ -442,11 +442,33 @@ neu gezeichnet; Zifferblatt und Zahlen werden erhalten. Die Zeigerlänge wird an
 den tatsächlichen Textgrenzen der Ziffern begrenzt, damit das Löschen keine Zahlen
 berührt. Digital werden nur geänderte Ziffernzellen gelöscht und neu gezeichnet.
 Datum und Wetter werden nur bei geänderten Anzeigeinhalten aktualisiert.
-Der Treiber fasst die geänderten Pixel weiterhin in einem Dirty-Rechteck zusammen;
-einzelne Pixel können deshalb nicht unabhängig in Standby versetzt werden.
+Jede geänderte Digitalziffer, die Analogzeiger, Datum, Wetter sowie linkes und
+rechtes Hinweisfeld werden in getrennten Übertragungen aktualisiert. Damit
+verbindet der Treiber eine geänderte Minutenstelle nicht mehr mit einem entfernten
+Wetter-/Hinweisfeld zu einem großen Rechteck. Ein unverändertes Feld löst keine
+Übertragung aus. Pro Übertragung bleibt die hardwarebedingte 32-Pixel-Ausrichtung
+der X-Grenzen bestehen. Analog bildet die Ausdehnung der alten/neuen Zeiger das
+notwendige Refresh-Rechteck; das ist keine Aktualisierung des ganzen Zifferblatts.
 Nach jeder Übertragung geht der gesamte Controller in Standby.
 Ein Deep-Sleep-Wakeup verliert den RAM-Bildpuffer und erfordert einen vollständigen
 Aufbau der Uhr, aber keinen INIT-Schwarz-Weiß-Reinigungszyklus.
+
+Bei beiden Uhransichten stehen oben links alle morgigen Müllabfuhren und oben
+rechts alle laufenden Waschmaschinen, Trockner und Geschirrspüler aus dem
+Start-Dashboard-Paket. Leere Felder haben weder Überschrift noch Platzhalter.
+Ein tatsächliches Abfuhrdatum hat Vorrang vor dem relativen `days`-Wert;
+undatierte `days: 1`-Einträge gelten nur am selben Tag wie das Datenpaket.
+Pausierte, fertige, ausgeschaltete und nicht verfügbare Geräte werden ausgeblendet.
+`packages/epaper_start_package.yaml` ergänzt dafür den unveränderten Rohzustand
+`raw_state`. Das aktualisierte HA-Paket ebenfalls übernehmen und Template-Entitäten
+neu laden. Ältere Pakete werden anhand der bekannten übersetzten Zustände akzeptiert.
+
+Die Hinweise werden nur bei gültiger Uhrzeit und einem gültigen HA-Paket mit
+höchstens 180 Sekunden altem `timestamp` angezeigt. Bei Programmende, Datenausfall
+oder Tageswechsel wird das jeweilige Hinweisfeld wieder gelöscht. Der Screensaver
+prüft alle fünf Sekunden auf geänderte Hinweise; die HA-Vorlage liefert mindestens
+minütlich neue Daten. Mehrere Geräte/Abfuhren bleiben gleichzeitig sichtbar.
+Der Kopfbereich ist für Hinweise reserviert; Uhr und Zifferblatt liegen darunter.
 
 Der IT8951 bleibt nur bis zum Ende der physischen Wellenform aktiv: Die Komponente
 wartet auf `LUTAFSR == 0`, sendet anschließend `TCON_STANDBY` und gibt erst nach
@@ -515,6 +537,9 @@ und prüfen die Trennung der Uhr-/Countdown-Rechtecke sowie die Home-Status-Guar
 Der vollständige Screensaver-Uhr-Renderer wird ebenfalls auf dem Host kompiliert:
 Analog-Minutenupdates ohne Zifferblatt-Neuaufbau, einzelne Digitalziffern,
 unveränderte/geänderte Fußzeilen, Mitternacht und erzwungener Neuaufbau.
+Zusätzliche Tests prüfen die Dirty-Grenzen einzelner Ziffern und Hinweise,
+mehrere gleichzeitige Geräte/Mülltonnen, Zustandsfilter, Ablauf der Datenfrist
+und Tages-/Monats-/Jahreswechsel.
 Diese Änderung wurde ohne ESPHome-Firmware-Build und ohne angeschlossenes Panel
 validiert. Der Test ersetzt keinen Paneltest.
 
