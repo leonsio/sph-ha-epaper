@@ -242,7 +242,26 @@ static void png_done(pngle_t *png){
 }
 bool SDScreensaver::load_png_(const std::string &path,uint8_t *out){
   FILE *f=fopen(path.c_str(),"rb");if(!f)return false;
-  setvbuf(f,nullptr,_IONBF,0); // read the SD card in explicit large blocks
+  RAMAllocator<uint8_t> allocator;
+  RAMAllocator<uint8_t> internal(RAMAllocator<uint8_t>::ALLOC_INTERNAL);
+  constexpr size_t CHUNK=32768;
+  // The inflate dictionary is accessed constantly. Prefer fast internal RAM.
+  uint8_t *engine=internal.allocate(PNGLE_T_SIZE);
+  bool engine_internal=engine!=nullptr;
+  if(!engine)engine=allocator.allocate(PNGLE_T_SIZE);
+  uint8_t *input=allocator.allocate(CHUNK),*io=allocator.allocate(CHUNK);
+  auto close=[&](){
+    fclose(f); // stdio must release its buffer before it is deallocated
+    if(io)allocator.deallocate(io,CHUNK);
+    if(input)allocator.deallocate(input,CHUNK);
+    if(engine)allocator.deallocate(engine,PNGLE_T_SIZE);
+  };
+  if(!engine||!input||!io){
+    close();ESP_LOGW(TAG,"Kein RAM fuer PNG-Decoder");return false;
+  }
+  if(setvbuf(f,reinterpret_cast<char *>(io),_IOFBF,CHUNK)!=0){
+    close();ESP_LOGW(TAG,"PNG-Lesepuffer nicht verfuegbar");return false;
+  }
   // Bound dimensions before the decoder allocates source scanline buffers.
   uint8_t header[24];
   auto be32=[](const uint8_t *p){return uint32_t(p[0])<<24|uint32_t(p[1])<<16|uint32_t(p[2])<<8|p[3];};
@@ -250,15 +269,7 @@ bool SDScreensaver::load_png_(const std::string &path,uint8_t *out){
      memcmp(header,"\x89PNG\r\n\x1a\n",8)||memcmp(header+12,"IHDR",4)||
      be32(header+8)!=13||!be32(header+16)||!be32(header+20)||
      be32(header+16)>8192||be32(header+20)>8192||fseek(f,0,SEEK_SET)!=0){
-    fclose(f);return false;
-  }
-  RAMAllocator<uint8_t> allocator;
-  constexpr size_t CHUNK=32768;
-  uint8_t *engine=allocator.allocate(PNGLE_T_SIZE),*input=allocator.allocate(CHUNK);
-  if(!engine||!input){
-    if(engine)allocator.deallocate(engine,PNGLE_T_SIZE);
-    if(input)allocator.deallocate(input,CHUNK);
-    fclose(f);ESP_LOGW(TAG,"Kein RAM fuer PNG-Decoder");return false;
+    close();return false;
   }
   memset(engine,0,PNGLE_T_SIZE);
   auto *png=reinterpret_cast<pngle_t *>(engine);
@@ -268,13 +279,18 @@ bool SDScreensaver::load_png_(const std::string &path,uint8_t *out){
   pngle_set_init_callback(png,png_init);
   pngle_set_draw_callback(png,png_draw);
   pngle_set_done_callback(png,png_done);
-  size_t pending=0;bool ok=true;
+  size_t pending=0,total_read=0;bool ok=true;
+  uint64_t read_us=0,decode_us=0;
   while(!target.done){
+    uint32_t begin=micros();
     size_t read=fread(input+pending,1,CHUNK-pending,f);
+    read_us+=uint32_t(micros()-begin);total_read+=read;
     size_t available=pending+read,consumed=0;
     if(ferror(f)||available==0){ok=false;break;}
     while(consumed<available&&!target.done){
+      begin=micros();
       int fed=pngle_feed(png,input+consumed,available-consumed);
+      decode_us+=uint32_t(micros()-begin);
       if(fed<0){
         ESP_LOGW(TAG,"PNG-Fehler: %s",pngle_error(png));ok=false;break;
       }
@@ -288,10 +304,12 @@ bool SDScreensaver::load_png_(const std::string &path,uint8_t *out){
     if(pending)memmove(input,input+consumed,pending);
   }
   ok=ok&&target.valid&&target.done;
+  ESP_LOGI(TAG,"PNG-Profil: %u Bytes; SD-Lesen=%u ms; Decodieren/Zeichnen=%u ms; Decoder=%s (%u Bytes)",
+           unsigned(total_read),unsigned(read_us/1000),unsigned(decode_us/1000),
+           engine_internal?"intern":"PSRAM",unsigned(PNGLE_T_SIZE));
   if(!ok)ESP_LOGW(TAG,"PNG unvollstaendig oder nicht unterstuetzt: %s",path.c_str());
   pngle_reset(png); // frees the decoder's dynamically allocated scanline buffers
-  allocator.deallocate(engine,PNGLE_T_SIZE);allocator.deallocate(input,CHUNK);
-  fclose(f);return ok;
+  close();return ok;
 }
 
 bool SDScreensaver::load_gray4_(const std::string &path,uint8_t *out){
