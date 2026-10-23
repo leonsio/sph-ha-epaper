@@ -30,12 +30,13 @@ void EpaperRefresh::full_panel_() {
   display_->*(&DisplayAccess::x_high_) = display_->*(&DisplayAccess::width_);
   display_->*(&DisplayAccess::y_high_) = display_->*(&DisplayAccess::height_);
 }
-void EpaperRefresh::clean() {
+void EpaperRefresh::clean(bool quick) {
   if (!idle()) return;
   saved_writer_ = display_->*(&DisplayAccess::writer_);
   cleaning_ = true;
+  quick_clean_ = quick;
   stage_ = 0;
-  ESP_LOGI("epaper_refresh", "Panel reinigen: INIT weiss -> GC16 schwarz -> GC16 weiss");
+  ESP_LOGI("epaper_refresh", "Panel reinigen: %s", quick ? "einmal INIT weiss" : "INIT weiss -> GC16 schwarz -> GC16 weiss");
 }
 void EpaperRefresh::preserve_partial() {
   if (idle()) display_->*(&DisplayAccess::partial_update_count_) = 0;
@@ -62,7 +63,7 @@ void EpaperRefresh::loop() {
     standby_();
     return;
   }
-  if (stage_ == 3) {
+  if (stage_ == (quick_clean_ ? 1 : 3)) {
     display_->set_writer(std::move(saved_writer_));
     saved_writer_ = {};
     cleaning_ = false;
