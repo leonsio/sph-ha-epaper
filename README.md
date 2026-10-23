@@ -596,7 +596,7 @@ Bilder dürfen direkt im Stammverzeichnis der SD-Karte oder unter
 `pngle 1.1.0` als Build-Abhängigkeit angefordert.
 
 PNGs aus OpenDithering können direkt verwendet werden. Der Decoder liest
-32-KiB-Blöcke und schreibt die entpackten Pixel schrittweise in den vorhandenen
+mit einem 32-KiB-stdio-Puffer in 32-KiB-Blöcken und schreibt die entpackten Pixel schrittweise in den vorhandenen
 4-Bit-Graustufenpuffer. Es wird kein vollständiges RGB-/RGBA-Bild angelegt.
 Transparente Pixel werden auf Weiß verrechnet; das exportierte Dithering wird
 nicht erneut angewendet. Unterstützt sind Graustufen, Paletten, RGB/RGBA und
@@ -625,3 +625,16 @@ PNGLE_SOURCE_DIR=/tmp/pngle SD_PNG_SAMPLE=/pfad/bild.png python -m unittest disc
 Die PNG-Änderung wurde einschließlich einer OpenDithering-RGBA-Datei mit
 1872 × 1404 Pixeln auf dem Host geprüft. Firmware-Build und Ladezeitmessung
 auf dem E1003 stehen noch aus.
+
+
+Die erste PNG-Messung auf dem E1003 ergab 46,8–51,5 Sekunden Ladezeit.
+Die PNG-Datei wird deshalb jetzt wie BMP gepuffert gelesen statt mit
+`_IONBF`. Der Decoderzustand einschließlich der häufig benutzten
+Entpack-Dictionary wird zuerst im internen RAM angelegt; bei Platzmangel
+wird auf PSRAM zurückgefallen. Die großen Bildpuffer bleiben unverändert.
+`PNG-Profil` protokolliert getrennt die Zeit in den blockweisen
+`fread`-Aufrufen und in `pngle_feed` (einschließlich Pixelzeichnung)
+sowie die Speicherregion des Decoders. Kleine Headerzugriffe, Allokation,
+Dateisuche und Panel-Refresh sind in diesen beiden Teilzeiten nicht enthalten.
+Ob gepuffertes Lesen oder Decodieren die bisherige Ladezeit dominierte und
+wie stark die Optimierung wirkt, muss mit diesen Werten am Gerät geprüft werden.
