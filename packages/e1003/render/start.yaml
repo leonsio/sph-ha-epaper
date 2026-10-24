@@ -175,7 +175,7 @@
         text(x,274,fit(a["state"]|"Unbekannt",id(font_lesson),appliance_w),id(font_lesson),INK,appliance_w);
         std::string eta=a["eta"]|"";
         text(x,324,fit(eta.empty()?"Ende: --":"ca. fertig "+eta,id(ui_body),appliance_w),id(ui_body),INK,appliance_w);
-        if(!a["progress"].isNull()){
+        if(screensaver_ui::running(a["raw_state"] | (a["state"] | "")) && !a["progress"].isNull()){
           const float p=std::max(0.0f,std::min(100.0f,a["progress"].as<float>()));
           it.rectangle(x,380,appliance_w,13,INK);
           fast_rect(x+1,381,(int)((appliance_w-2)*p/100.0f),11,INK);
