@@ -397,7 +397,7 @@
     const int available=std::max(0,bottom-content_y-(int)groups.size()*header_h-
                                   std::max(0,(int)groups.size()-1)*group_gap);
     const int row_h=std::max(1,available/std::max(1,rows));
-    const Color ICON_COLOR=INK; // Small room symbols need full black contrast.
+    const Color ICON_COLOR(153,153,153); // Gray room symbols; labels remain black.
     const Color CARD_BORDER(214,214,214);
     auto floor_icon=[](const std::string &f)->const char*{
       if(f=="Dachgeschoss")return "\U000F0D81"; // home-floor-2
